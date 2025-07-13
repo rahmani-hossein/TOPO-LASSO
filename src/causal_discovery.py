@@ -2,14 +2,15 @@ import numpy as np
 import pandas as pd
 from dodiscover import make_context
 from dodiscover.toporder.score import SCORE
+from dodiscover.toporder.das import DAS
+from dodiscover.toporder.cam import CAM
+from dodiscover.toporder.nogam import NoGAM
 from sklearn.preprocessing import StandardScaler
-import networkx as nx
-from lassonet import LassoNetRegressor
+import networkx as nx 
 from sklearn.linear_model import Lasso
 from sklearn.model_selection import train_test_split
 import time
-
-
+from lassonet import LassoNetRegressorCV
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -93,24 +94,6 @@ def find_sparsest_lasso_alpha(X, y, test_size=0.2, random_state=42, alphas=None,
         'sparsest_non_zero': sparsest_non_zero
     }
 
-def display_lasso_results(results):
-    """
-    Display the results of the Lasso sparsity analysis.
-    
-    Parameters:
-    - results: Dictionary returned by find_sparsest_lasso_alpha
-    """
-    print(f"Best Alpha (lowest MSE): {results['best_alpha']:.6f}")
-    print(f"Best MSE: {results['best_mse']:.6f}")
-    print(f"Non-zero coefficients (best alpha): {results['best_non_zero']}")
-    print(f"\nSparsest Alpha (within 1 SE): {results['sparsest_alpha']:.6f}")
-    print(f"Non-zero coefficients (sparsest alpha): {results['sparsest_non_zero']}")
-    print(f"\nFinal Model Performance (sparsest alpha):")
-    print(f"Mean Squared Error: {results['mse_final']:.6f}")
-    print(f"R-squared: {results['r2_final']:.6f}")
-    print("\nSelected Features:")
-    print(results['selected_features'])
-
 def generate_scm(n_samples, relations, noise_std=1.0, seed=None):
     """
     Generate data from a nonlinear additive SCM with Gaussian noise.
@@ -158,13 +141,13 @@ def get_topological_order(df_scaled, method='SCORE', **kwargs):
     if method == 'SCORE':
         cd_method = SCORE(**kwargs)
     elif method == 'DAS':
-        from dodiscover.toporder.das import DAS
+
         cd_method = DAS(**kwargs)
     elif method == 'NoGAM':
-        from dodiscover.toporder.nogam import NoGAM
+
         cd_method = NoGAM(**kwargs)
     elif method == 'CAM':
-        from dodiscover.toporder.cam import CAM
+
         cd_method = CAM(**kwargs)
     else:
         raise ValueError(f"Unknown method: {method}")
@@ -179,7 +162,7 @@ def get_topological_order(df_scaled, method='SCORE', **kwargs):
     
     return topological_order, graph
 
-def predict_functional_form(df_scaled, target_var, parent_vars):
+def predict_functional_form(df_scaled, target_var, candidate_vars):
     """
     Predict the functional form of the last variable in the topological order
     using LassoNet.
@@ -187,7 +170,7 @@ def predict_functional_form(df_scaled, target_var, parent_vars):
     Parameters:
         df_scaled (pd.DataFrame): Scaled input data
         target_var (str): Target variable
-        parent_vars (list): List of parent variables
+        candidate_vars (list): List of candidate variables (for being parents)
         
     Returns:
         tuple: (model, feature_importance)
@@ -196,36 +179,47 @@ def predict_functional_form(df_scaled, target_var, parent_vars):
     """
     start_time = time.time()
     # Prepare data
-    X = df_scaled[parent_vars].values
+    X = df_scaled[candidate_vars].values
     y = df_scaled[target_var].values
     
-    lasso_results = find_sparsest_lasso_alpha(X, y)
-    display_lasso_results(lasso_results)
+
     # Split data
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    # Normalize the data
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    model = LassoNetRegressorCV(hidden_dims=(50,25, 10))
+    model.fit(X_train_scaled, y_train)
+
+    # Get the best lambda and selected features
+    best_lambda = model.best_lambda_
+    selected_features = model.best_selected_
+    print(f"Best lambda: {best_lambda}")
+    print(f"Selected features: {selected_features}")
+    print(f"Number of selected features: {len(selected_features ==True)}")
+    # # Initialize and fit LassoNet with optimized parameters
+    # model = LassoNetRegressor(
+    #     hidden_dims=(6,3),  # Smaller hidden layer
+    #     verbose=False,  # Disable verbose output
+    #     patience=100,  # Reduced patience
+    #     n_iters=500,  # Fewer iterations
+    #     lambda_start=0.1,  # Start with stronger regularization
+    #     M=10  # Smaller M parameter
+    # )
+    # print(f'fitting the model for the variable {target_var} from the variables {parent_vars}')
+    # model.fit(X_train, y_train)
     
-    # Initialize and fit LassoNet with optimized parameters
-    model = LassoNetRegressor(
-        hidden_dims=(6,3),  # Smaller hidden layer
-        verbose=False,  # Disable verbose output
-        patience=100,  # Reduced patience
-        n_iters=500,  # Fewer iterations
-        lambda_start=0.1,  # Start with stronger regularization
-        M=10  # Smaller M parameter
-    )
-    print(f'fitting the model for the variable {target_var} from the variables {parent_vars}')
-    model.fit(X_train, y_train)
+    # # Get feature importance
+    # feature_importance = dict(zip(parent_vars, model.feature_importances_))
     
-    # Get feature importance
-    feature_importance = dict(zip(parent_vars, model.feature_importances_))
+    # # Print results
+    # print(f"Feature importance:")
+    # for feature, importance in sorted(feature_importance.items(), key=lambda x: abs(x[1]), reverse=True):
+    #     print(f"{feature}: {importance:.4f}")
     
-    # Print results
-    print(f"Feature importance:")
-    for feature, importance in sorted(feature_importance.items(), key=lambda x: abs(x[1]), reverse=True):
-        print(f"{feature}: {importance:.4f}")
-    
-    print(f"Test R2 score: {model.score(X_test, y_test):.4f}")
-    print(f"Functional form prediction completed in {time.time() - start_time:.2f} seconds")
+    # print(f"Test R2 score: {model.score(X_test, y_test):.4f}")
+    # print(f"Functional form prediction completed in {time.time() - start_time:.2f} seconds")
     
     return model, feature_importance
 
@@ -266,6 +260,39 @@ def causal_discovery(df, method='SCORE', **kwargs):
     
     print(f"\nTotal execution time: {time.time() - start_time:.2f} seconds")
     return topological_order, causal_graph, model, feature_importance
+
+class LassoNetVariableSelector:
+    """
+    For each variable in the topological order, fit LassoNet using its candidate parents
+    (those earlier in the order) and store the selected parents.
+    """
+    def __init__(self, hidden_dims=(50, 25, 10)):
+        self.hidden_dims = hidden_dims
+        self.selected_parents_ = {}
+        self.models_ = {}
+
+    def fit(self, df_scaled, topological_order):
+        """
+        Fit LassoNet for each variable in the topological order (except the first),
+        using all previous variables as candidate parents.
+        """
+        for idx, target_var in enumerate(topological_order[1:], 1):
+            parent_vars = topological_order[:idx]
+            X = df_scaled[parent_vars].values
+            y = df_scaled[target_var].values
+            model = LassoNetRegressorCV(hidden_dims=self.hidden_dims)
+            model.fit(X, y)
+            selected = [parent_vars[i] for i, sel in enumerate(model.best_selected_) if sel]
+            self.selected_parents_[target_var] = selected
+            self.models_[target_var] = model
+            print(f"[LassoNet] {target_var}: selected parents: {selected}")
+        return self
+
+    def get_selected_parents(self):
+        return self.selected_parents_
+
+    def get_model(self, target_var):
+        return self.models_.get(target_var, None)
 
 # Example usage
 if __name__ == "__main__":

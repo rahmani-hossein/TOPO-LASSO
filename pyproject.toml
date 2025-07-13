@@ -7,4 +7,5 @@ requires-python = ">=3.10"
 dependencies = [
     "lassonet>=0.0.20",
     "scikit-learn>=1.6.1",
+    "seaborn>=0.13.2",
 ]
