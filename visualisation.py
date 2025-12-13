@@ -1,443 +1,625 @@
+"""
+MODULAR SENSITIVITY ANALYSIS
+=============================
+Production-ready code for mortgage sensitivity segmentation and analysis
+"""
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.preprocessing import StandardScaler
+from pathlib import Path
+import warnings
+warnings.filterwarnings('ignore')
 
 # Set style
 sns.set_style("whitegrid")
+plt.rcParams['figure.figsize'] = (16, 10)
 
-def visualize_200_curves(df, n_mortgages=6):
+
+# ============================================================================
+# MODULE 1: DATA PREPARATION
+# ============================================================================
+
+def prepare_data(df, mtg_col='mtgnum', treatment_col='margin_x', 
+                 outcome_col='sensitivity', verbose=True):
     """
-    For each mortgage, visualize all 200 sensitivity curves (one per margin_x value)
+    Prepare and validate input data
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        Input dataframe with mortgage records
+    mtg_col : str
+        Column name for mortgage identifier
+    treatment_col : str  
+        Column name for treatment variable (margin_x)
+    outcome_col : str
+        Column name for outcome/sensitivity
+    verbose : bool
+        Print diagnostic info
+    
+    Returns:
+    --------
+    pd.DataFrame : Validated data
+    """
+    if verbose:
+        print("\n" + "="*80)
+        print("DATA PREPARATION")
+        print("="*80)
+        print(f"Total rows: {len(df):,}")
+        print(f"Unique mortgages: {df[mtg_col].nunique():,}")
+        print(f"Columns: {df.columns.tolist()}")
+        
+        # Check records per mortgage
+        records_per_mtg = df.groupby(mtg_col).size()
+        print(f"\nRecords per mortgage:")
+        print(f"  Mean: {records_per_mtg.mean():.1f}")
+        print(f"  Min: {records_per_mtg.min()}")
+        print(f"  Max: {records_per_mtg.max()}")
+        print(f"  Mode: {records_per_mtg.mode().values[0] if len(records_per_mtg.mode()) > 0 else 'N/A'}")
+    
+    return df.copy()
+
+
+# ============================================================================
+# MODULE 2: 1D SENSITIVITY CALCULATION
+# ============================================================================
+
+def calculate_1d_sensitivity(df, mtg_col='mtgnum', treatment_col='margin_x',
+                             outcome_col='sensitivity', method='mean', 
+                             verbose=True):
+    """
+    Calculate 1D sensitivity metric from response curves
+    
+    Parameters:
+    -----------
+    method : str
+        Method for 1D calculation:
+        - 'mean': Average sensitivity (RECOMMENDED for CATE)
+        - 'max': Maximum sensitivity  
+        - 'std': Standard deviation (variability)
+        - 'auc': Area under curve
+        - 'range': Max - Min
+        - 'all': Calculate all metrics
+    
+    Returns:
+    --------
+    pd.DataFrame : One row per mortgage with 1D sensitivity
+    """
+    if verbose:
+        print("\n" + "="*80)
+        print(f"1D SENSITIVITY CALCULATION - Method: {method.upper()}")
+        print("="*80)
+    
+    results = []
+    
+    for mtg_num in df[mtg_col].unique():
+        # Get all records for this mortgage
+        mtg_data = df[df[mtg_col] == mtg_num].copy()
+        mtg_data = mtg_data.sort_values(treatment_col)
+        
+        x_values = mtg_data[treatment_col].values
+        y_values = mtg_data[outcome_col].values
+        
+        record = {mtg_col: mtg_num}
+        
+        if method == 'mean' or method == 'all':
+            record['sens_mean'] = np.mean(y_values)
+        
+        if method == 'max' or method == 'all':
+            record['sens_max'] = np.max(y_values)
+        
+        if method == 'std' or method == 'all':
+            record['sens_std'] = np.std(y_values)
+        
+        if method == 'auc' or method == 'all':
+            # Normalize x-values to [0,1] to make AUC comparable
+            x_norm = (x_values - x_values.min()) / (x_values.max() - x_values.min() + 1e-10)
+            record['sens_auc'] = np.trapz(y_values, x_norm)
+        
+        if method == 'range' or method == 'all':
+            record['sens_range'] = np.max(y_values) - np.min(y_values)
+        
+        if method == 'min' or method == 'all':
+            record['sens_min'] = np.min(y_values)
+        
+        results.append(record)
+    
+    sensitivity_1d = pd.DataFrame(results)
+    
+    if verbose:
+        metric_col = [c for c in sensitivity_1d.columns if c.startswith('sens_')][0]
+        print(f"✓ Calculated 1D sensitivity for {len(sensitivity_1d):,} mortgages")
+        print(f"\nStatistics ({metric_col}):")
+        print(f"  Min: {sensitivity_1d[metric_col].min():.4f}")
+        print(f"  Max: {sensitivity_1d[metric_col].max():.4f}")
+        print(f"  Mean: {sensitivity_1d[metric_col].mean():.4f}")
+        print(f"  Median: {sensitivity_1d[metric_col].median():.4f}")
+        print(f"  Std: {sensitivity_1d[metric_col].std():.4f}")
+    
+    return sensitivity_1d
+
+
+# ============================================================================
+# MODULE 3: SEGMENTATION / QUANTILE RANKING
+# ============================================================================
+
+def create_sensitivity_segments(df, sensitivity_1d, mtg_col='mtgnum',
+                                n_segments=10, sensitivity_metric='sens_mean',
+                                verbose=True):
+    """
+    Rank mortgages by sensitivity and create segments (quantiles)
+    
+    Parameters:
+    -----------
+    n_segments : int
+        Number of segments (default 10)
+    sensitivity_metric : str
+        Column name to use for ranking
+    
+    Returns:
+    --------
+    pd.DataFrame : Mortgage-level data with segment assignments
+    """
+    if verbose:
+        print("\n" + "="*80)
+        print(f"CREATING {n_segments} SENSITIVITY SEGMENTS")
+        print("="*80)
+    
+    # Get one row per mortgage with all features
+    mtg_features = df.groupby(mtg_col).first().reset_index()
+    
+    # Merge sensitivity
+    mtg_features = mtg_features.merge(sensitivity_1d, on=mtg_col, how='left')
+    
+    # Create segments using NumPy
+    sorted_indices = np.argsort(mtg_features[sensitivity_metric].values)
+    n_per_segment = len(sorted_indices) // n_segments
+    
+    segment_assignments = np.zeros(len(sorted_indices), dtype=int)
+    
+    for seg in range(n_segments):
+        start_idx = seg * n_per_segment
+        if seg == n_segments - 1:  # Last segment gets remaining
+            end_idx = len(sorted_indices)
+        else:
+            end_idx = (seg + 1) * n_per_segment
+        
+        # Segment 1 = lowest, Segment 10 = highest
+        segment_assignments[sorted_indices[start_idx:end_idx]] = seg + 1
+    
+    mtg_features['sensitivity_segment'] = segment_assignments
+    
+    if verbose:
+        print(f"✓ Assigned {len(mtg_features):,} mortgages to {n_segments} segments")
+        print("\nSegment Distribution:")
+        for seg in range(1, n_segments + 1):
+            count = np.sum(segment_assignments == seg)
+            avg_sens = mtg_features[mtg_features['sensitivity_segment'] == seg][sensitivity_metric].mean()
+            print(f"  Segment {seg:2d}: {count:6,} mortgages (Avg sens: {avg_sens:.4f})")
+    
+    return mtg_features
+
+
+# ============================================================================
+# MODULE 4: SEGMENT ANALYSIS
+# ============================================================================
+
+def analyze_segments(mtg_features, feature_cols=None, verbose=True):
+    """
+    Analyze features by sensitivity segment
+    
+    Parameters:
+    -----------
+    mtg_features : pd.DataFrame
+        Mortgage-level data with segment assignments
+    feature_cols : list
+        Feature columns to analyze (auto-detect if None)
+    
+    Returns:
+    --------
+    pd.DataFrame : Segment-level statistics
+    """
+    if verbose:
+        print("\n" + "="*80)
+        print("SEGMENT FEATURE ANALYSIS")
+        print("="*80)
+    
+    # Auto-detect numeric features if not specified
+    if feature_cols is None:
+        numeric_cols = mtg_features.select_dtypes(include=[np.number]).columns
+        exclude_cols = ['mtgnum', 'sensitivity_segment']
+        feature_cols = [c for c in numeric_cols if c not in exclude_cols]
+    
+    # Filter to available features
+    feature_cols = [c for c in feature_cols if c in mtg_features.columns]
+    
+    if verbose:
+        print(f"Analyzing {len(feature_cols)} features: {feature_cols}")
+    
+    segment_stats = []
+    
+    for seg in sorted(mtg_features['sensitivity_segment'].unique()):
+        seg_data = mtg_features[mtg_features['sensitivity_segment'] == seg]
+        
+        stats = {
+            'segment': seg,
+            'count': len(seg_data),
+            'total_volume': seg_data.get('volume', seg_data.get('balance', pd.Series([0]))).sum()
+        }
+        
+        for feature in feature_cols:
+            values = seg_data[feature].dropna().values
+            if len(values) > 0:
+                stats[f'{feature}_mean'] = np.mean(values)
+                stats[f'{feature}_median'] = np.median(values)
+                stats[f'{feature}_std'] = np.std(values)
+        
+        segment_stats.append(stats)
+    
+    segment_analysis = pd.DataFrame(segment_stats)
+    
+    if verbose:
+        print("\n✓ Segment analysis complete")
+        display_cols = ['segment', 'count'] + [c for c in segment_analysis.columns 
+                                               if c.endswith('_mean')][:5]
+        print("\nSegment Summary:")
+        print(segment_analysis[display_cols].to_string(index=False))
+    
+    return segment_analysis
+
+
+# ============================================================================
+# MODULE 5: RESPONSE CURVE VISUALIZATION
+# ============================================================================
+
+def visualize_response_curves(df, mtg_features, mtg_col='mtgnum',
+                              treatment_col='margin_x', outcome_col='sensitivity',
+                              n_samples=6, by_segment=False, output_path=None):
+    """
+    Visualize response curves Y vs T
+    
+    Parameters:
+    -----------
+    by_segment : bool
+        If True, sample mortgages from different segments
+    output_path : str or Path
+        Where to save the figure
     """
     print("\n" + "="*80)
-    print("STEP 1: Visualizing 200 Sensitivity Curves per Mortgage")
+    print("VISUALIZING RESPONSE CURVES")
     print("="*80)
-    
-    # Get unique mortgages
-    unique_mtg = df['mtgnum'].unique()
-    
-    # Sample some mortgages
-    np.random.seed(42)
-    if len(unique_mtg) > n_mortgages:
-        sampled_mtg = np.random.choice(unique_mtg, n_mortgages, replace=False)
-    else:
-        sampled_mtg = unique_mtg
     
     fig, axes = plt.subplots(2, 3, figsize=(20, 12))
     axes = axes.flatten()
     
-    for idx, mtg_num in enumerate(sampled_mtg[:6]):
+    # Sample mortgages
+    if by_segment and 'sensitivity_segment' in mtg_features.columns:
+        # Sample from different segments
+        segments = sorted(mtg_features['sensitivity_segment'].unique())
+        step = max(1, len(segments) // n_samples)
+        sample_segments = segments[::step][:n_samples]
+        
+        sampled_mtgs = []
+        for seg in sample_segments:
+            seg_mtgs = mtg_features[mtg_features['sensitivity_segment'] == seg][mtg_col].values
+            if len(seg_mtgs) > 0:
+                sampled_mtgs.append(np.random.choice(seg_mtgs))
+    else:
+        unique_mtgs = df[mtg_col].unique()
+        np.random.seed(42)
+        sampled_mtgs = np.random.choice(unique_mtgs, min(n_samples, len(unique_mtgs)), replace=False)
+    
+    for idx, mtg_num in enumerate(sampled_mtgs[:6]):
         ax = axes[idx]
         
-        # Get all 200 records for this mortgage
-        mtg_data = df[df['mtgnum'] == mtg_num].copy()
+        # Get response curve data
+        mtg_data = df[df[mtg_col] == mtg_num].sort_values(treatment_col)
         
-        print(f"Mortgage {mtg_num}: {len(mtg_data)} records")
+        x_vals = mtg_data[treatment_col].values
+        y_vals = mtg_data[outcome_col].values
         
-        # Sort by margin_x for proper curve visualization
-        mtg_data = mtg_data.sort_values('margin_x')
+        # Plot curve
+        ax.plot(x_vals, y_vals, linewidth=2.5, marker='o', markersize=4,
+                color='steelblue', alpha=0.8)
         
-        # Extract the 200 margin_x values and 200 sensitivity values
-        x_values = mtg_data['margin_x'].values  # 200 points
-        y_values = mtg_data['sensitivity'].values  # 200 points
+        # Get segment info
+        seg_info = ""
+        if 'sensitivity_segment' in mtg_features.columns:
+            seg = mtg_features[mtg_features[mtg_col] == mtg_num]['sensitivity_segment'].values
+            if len(seg) > 0:
+                seg_info = f" (Segment {seg[0]})"
         
-        # Plot the curve
-        ax.plot(x_values, y_values, 
-                linewidth=2, 
-                marker='o', 
-                markersize=4,
-                alpha=0.7,
-                color='steelblue')
-        
-        ax.set_xlabel('Margin X', fontsize=11, fontweight='bold')
-        ax.set_ylabel('Sensitivity', fontsize=11, fontweight='bold')
-        ax.set_title(f'Mortgage {mtg_num:,}\n({len(mtg_data)} points)', 
-                     fontsize=12, fontweight='bold')
+        ax.set_xlabel('Treatment (T): Margin X', fontsize=11, fontweight='bold')
+        ax.set_ylabel('Outcome (Y): Sensitivity', fontsize=11, fontweight='bold')
+        ax.set_title(f'Mortgage {mtg_num:,}{seg_info}', fontsize=12, fontweight='bold')
         ax.grid(True, alpha=0.3, linestyle='--')
         
-        # Add some statistics
-        y_mean = np.mean(y_values)
-        y_std = np.std(y_values)
-        y_min = np.min(y_values)
-        y_max = np.max(y_values)
-        
-        stats_text = f'Mean: {y_mean:.2f}\nStd: {y_std:.2f}\nRange: [{y_min:.2f}, {y_max:.2f}]'
-        ax.text(0.02, 0.98, stats_text,
-                transform=ax.transAxes,
-                verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7),
-                fontsize=8)
+        # Add stats box
+        stats_text = (f'Mean Y: {np.mean(y_vals):.2f}\n'
+                     f'Range: {np.max(y_vals) - np.min(y_vals):.2f}\n'
+                     f'N points: {len(y_vals)}')
+        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+                verticalalignment='top', fontsize=9,
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
     
     # Hide unused subplots
-    for idx in range(len(sampled_mtg), len(axes)):
+    for idx in range(len(sampled_mtgs), len(axes)):
         axes[idx].set_visible(False)
     
-    plt.suptitle('Sensitivity Curves: 200 Points per Mortgage', 
+    plt.suptitle('Response Curves: Y vs. T (Sensitivity vs. Margin)', 
                  fontsize=16, fontweight='bold', y=0.995)
     plt.tight_layout()
     
-    print(f"✓ Visualized {len(sampled_mtg)} mortgages")
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"✓ Saved: {output_path}")
     
     return fig
 
-def calculate_1d_sensitivity_numpy(df):
+
+# ============================================================================
+# MODULE 6: SEGMENT DISTRIBUTION TABLE
+# ============================================================================
+
+def create_segment_distribution_table(mtg_features, segment_analysis, 
+                                      feature_cols=None, output_path=None):
     """
-    Calculate 1D sensitivity from 200 values using NumPy
-    Multiple methods available - using Area Under Curve (trapezoidal rule)
+    Create segment distribution table matching your presentation format
     """
     print("\n" + "="*80)
-    print("STEP 2: Calculating 1D Sensitivity from 200 Points")
+    print("CREATING SEGMENT DISTRIBUTION TABLE")
     print("="*80)
     
-    results = []
+    fig, ax = plt.subplots(figsize=(18, 10))
+    ax.axis('tight')
+    ax.axis('off')
     
-    for mtg_num in df['mtgnum'].unique():
-        # Get 200 records for this mortgage
-        mtg_data = df[df['mtgnum'] == mtg_num].copy()
-        mtg_data = mtg_data.sort_values('margin_x')
-        
-        x_values = mtg_data['margin_x'].values
-        y_values = mtg_data['sensitivity'].values
-        
-        # Method 1: Area Under Curve using NumPy trapezoidal rule
-        auc = np.trapz(y_values, x_values)
-        
-        # Method 2: Mean sensitivity (alternative)
-        mean_sens = np.mean(y_values)
-        
-        # Method 3: Max sensitivity (alternative)
-        max_sens = np.max(y_values)
-        
-        # Method 4: Standard deviation (variability)
-        std_sens = np.std(y_values)
-        
-        results.append({
-            'mtgnum': mtg_num,
-            'sensitivity_1d_auc': auc,
-            'sensitivity_mean': mean_sens,
-            'sensitivity_max': max_sens,
-            'sensitivity_std': std_sens
-        })
+    # Prepare table data
+    columns = ['Segment', 'Count', 'Total\nVolume', 'Avg.\nBeacon']
     
-    sensitivity_1d = pd.DataFrame(results)
+    # Add feature columns if available
+    if feature_cols is None:
+        feature_cols = []
+        for col in mtg_features.columns:
+            if any(x in col.lower() for x in ['insured', 'broker', 'tds', 'ltv', 
+                                               'balance', 'beacon', 'amort']):
+                feature_cols.append(col)
     
-    print(f"✓ Calculated 1D sensitivity for {len(sensitivity_1d):,} mortgages")
-    print(f"\nSensitivity Statistics (AUC):")
-    print(f"  Min: {sensitivity_1d['sensitivity_1d_auc'].min():.2f}")
-    print(f"  Max: {sensitivity_1d['sensitivity_1d_auc'].max():.2f}")
-    print(f"  Mean: {sensitivity_1d['sensitivity_1d_auc'].mean():.2f}")
-    print(f"  Median: {sensitivity_1d['sensitivity_1d_auc'].median():.2f}")
+    # Build table data
+    table_data = []
     
-    return sensitivity_1d
+    for seg in sorted(segment_analysis['segment'].unique()):
+        seg_stats = segment_analysis[segment_analysis['segment'] == seg].iloc[0]
+        
+        row = [
+            f"{int(seg)} {'(Lowest)' if seg == 1 else '(Highest)' if seg == 10 else ''}",
+            f"{int(seg_stats['count']):,}",
+            f"${seg_stats.get('total_volume', 0)/1e6:.1f}M" if 'total_volume' in seg_stats else 'N/A',
+        ]
+        
+        # Add feature columns
+        for feature in feature_cols[:5]:  # Limit to 5 features
+            mean_col = f'{feature}_mean'
+            if mean_col in seg_stats:
+                val = seg_stats[mean_col]
+                if 'pct' in feature.lower() or '%' in feature.lower():
+                    row.append(f"{val:.1f}%")
+                else:
+                    row.append(f"{val:.2f}")
+            else:
+                row.append('N/A')
+        
+        table_data.append(row)
+    
+    # Create table
+    table = ax.table(cellText=table_data, colLabels=columns[:len(table_data[0])],
+                    cellLoc='center', loc='center',
+                    colWidths=[0.15, 0.12] + [0.12] * (len(table_data[0]) - 2))
+    
+    table.auto_set_font_size(False)
+    table.set_fontsize(11)
+    table.scale(1, 2.5)
+    
+    # Style header
+    for i in range(len(columns[:len(table_data[0])])):
+        cell = table[(0, i)]
+        cell.set_facecolor('#2d5f3f')
+        cell.set_text_props(weight='bold', color='white')
+    
+    # Alternate row colors
+    for i in range(1, len(table_data) + 1):
+        for j in range(len(table_data[0])):
+            cell = table[(i, j)]
+            if i % 2 == 0:
+                cell.set_facecolor('#f0f0f0')
+    
+    plt.title('Sensitivity Segment Distributions', fontsize=16, 
+             fontweight='bold', pad=20)
+    
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"✓ Saved: {output_path}")
+    
+    return fig
 
-def rank_and_create_quantiles(df, sensitivity_1d, n_quantiles=10):
+
+# ============================================================================
+# MODULE 7: SEGMENT COMPARISON VISUALIZATIONS  
+# ============================================================================
+
+def create_segment_comparison_plots(segment_analysis, mtg_features,
+                                   output_path=None):
     """
-    Rank mortgages by 1D sensitivity and assign to quantiles
+    Create comprehensive segment comparison plots
     """
     print("\n" + "="*80)
-    print(f"STEP 3: Ranking and Creating {n_quantiles} Quantiles")
-    print("="*80)
-    
-    # Merge sensitivity back to original data
-    df_merged = df.merge(sensitivity_1d[['mtgnum', 'sensitivity_1d_auc']], 
-                         on='mtgnum', how='left')
-    
-    # Get one row per mortgage for ranking
-    mtg_level = df_merged.groupby('mtgnum').first().reset_index()
-    
-    # Create quantiles using NumPy
-    # Sort by sensitivity
-    sorted_indices = np.argsort(mtg_level['sensitivity_1d_auc'].values)
-    n_per_quantile = len(sorted_indices) // n_quantiles
-    
-    quantile_assignments = np.zeros(len(sorted_indices), dtype=int)
-    
-    for q in range(n_quantiles):
-        start_idx = q * n_per_quantile
-        if q == n_quantiles - 1:  # Last quantile gets remaining
-            end_idx = len(sorted_indices)
-        else:
-            end_idx = (q + 1) * n_per_quantile
-        
-        # Assign quantile (0 = lowest, 9 = highest)
-        quantile_assignments[sorted_indices[start_idx:end_idx]] = q
-    
-    mtg_level['sensitivity_quantile'] = quantile_assignments
-    
-    print(f"✓ Assigned {len(mtg_level):,} mortgages to {n_quantiles} quantiles")
-    print("\nMortgages per quantile:")
-    unique, counts = np.unique(quantile_assignments, return_counts=True)
-    for q, count in zip(unique, counts):
-        print(f"  Quantile {q}: {count} mortgages")
-    
-    return mtg_level
-
-def analyze_quantiles_numpy(mtg_level):
-    """
-    Analyze features by quantile using NumPy
-    """
-    print("\n" + "="*80)
-    print("STEP 4: Analyzing Features by Quantile")
-    print("="*80)
-    
-    # Features to analyze
-    feature_cols = [
-        'sensitivity_1d_auc',
-        'remaining_amort_months_x',
-        'cost_of_funds_x',
-        'prediction'
-    ]
-    
-    # Filter available features
-    available_features = [col for col in feature_cols if col in mtg_level.columns]
-    
-    quantile_stats = []
-    
-    for q in range(10):
-        # Get mortgages in this quantile
-        q_data = mtg_level[mtg_level['sensitivity_quantile'] == q]
-        
-        stats = {'quantile': q, 'n_mortgages': len(q_data)}
-        
-        for feature in available_features:
-            values = q_data[feature].values
-            stats[f'{feature}_mean'] = np.mean(values)
-            stats[f'{feature}_median'] = np.median(values)
-            stats[f'{feature}_std'] = np.std(values)
-            stats[f'{feature}_min'] = np.min(values)
-            stats[f'{feature}_max'] = np.max(values)
-        
-        quantile_stats.append(stats)
-    
-    quantile_analysis = pd.DataFrame(quantile_stats)
-    quantile_analysis = quantile_analysis.set_index('quantile')
-    
-    print("✓ Quantile analysis complete")
-    print("\nSummary (Quantile 0=Lowest, 9=Highest):")
-    display_cols = ['n_mortgages', 'sensitivity_1d_auc_mean', 
-                   'remaining_amort_months_x_mean', 'prediction_mean']
-    display_cols = [c for c in display_cols if c in quantile_analysis.columns]
-    print(quantile_analysis[display_cols].to_string())
-    
-    return quantile_analysis
-
-def visualize_quantile_analysis(quantile_analysis, mtg_level):
-    """
-    Create comprehensive quantile visualizations
-    """
-    print("\n" + "="*80)
-    print("STEP 5: Creating Quantile Visualizations")
+    print("CREATING SEGMENT COMPARISON PLOTS")
     print("="*80)
     
     fig = plt.figure(figsize=(20, 14))
-    gs = fig.add_gridspec(4, 3, hspace=0.35, wspace=0.3)
+    gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
     
-    quantiles = quantile_analysis.index.values
+    segments = sorted(segment_analysis['segment'].unique())
     
-    # Plot 1: Number of mortgages per quantile
+    # Plot 1: Count distribution
     ax1 = fig.add_subplot(gs[0, 0])
-    ax1.bar(quantiles, quantile_analysis['n_mortgages'], 
-            color='steelblue', alpha=0.7, edgecolor='black', linewidth=1.5)
-    ax1.set_xlabel('Sensitivity Quantile', fontsize=12, fontweight='bold')
+    ax1.bar(segments, segment_analysis['count'], color='steelblue', 
+            alpha=0.7, edgecolor='black', linewidth=1.5)
+    ax1.set_xlabel('Sensitivity Segment', fontsize=12, fontweight='bold')
     ax1.set_ylabel('Number of Mortgages', fontsize=12, fontweight='bold')
-    ax1.set_title('Distribution Across Quantiles', fontsize=13, fontweight='bold')
-    ax1.set_xticks(quantiles)
+    ax1.set_title('Mortgage Count by Segment', fontsize=13, fontweight='bold')
     ax1.grid(True, alpha=0.3, axis='y')
     
-    # Plot 2: Mean sensitivity (AUC) by quantile
-    ax2 = fig.add_subplot(gs[0, 1])
-    ax2.plot(quantiles, quantile_analysis['sensitivity_1d_auc_mean'], 
-             marker='o', linestyle='-', linewidth=2.5, markersize=8, color='coral')
-    ax2.fill_between(quantiles, quantile_analysis['sensitivity_1d_auc_mean'], 
-                     alpha=0.3, color='coral')
-    ax2.set_xlabel('Sensitivity Quantile', fontsize=12, fontweight='bold')
-    ax2.set_ylabel('Mean Sensitivity (AUC)', fontsize=12, fontweight='bold')
-    ax2.set_title('Average Sensitivity by Quantile', fontsize=13, fontweight='bold')
-    ax2.set_xticks(quantiles)
-    ax2.grid(True, alpha=0.3)
+    # Plot 2: Average sensitivity
+    sens_cols = [c for c in segment_analysis.columns if c.startswith('sens_')]
+    if sens_cols:
+        ax2 = fig.add_subplot(gs[0, 1])
+        ax2.plot(segments, segment_analysis[sens_cols[0]], marker='o',
+                linewidth=2.5, markersize=8, color='coral')
+        ax2.fill_between(segments, segment_analysis[sens_cols[0]], alpha=0.3, color='coral')
+        ax2.set_xlabel('Sensitivity Segment', fontsize=12, fontweight='bold')
+        ax2.set_ylabel('Average Sensitivity', fontsize=12, fontweight='bold')
+        ax2.set_title('Sensitivity by Segment', fontsize=13, fontweight='bold')
+        ax2.grid(True, alpha=0.3)
     
-    # Plot 3: Remaining amortization
-    ax3 = fig.add_subplot(gs[0, 2])
-    if 'remaining_amort_months_x_mean' in quantile_analysis.columns:
-        ax3.bar(quantiles, quantile_analysis['remaining_amort_months_x_mean'], 
-                color='seagreen', alpha=0.7, edgecolor='black', linewidth=1.5)
-        ax3.set_xlabel('Sensitivity Quantile', fontsize=12, fontweight='bold')
-        ax3.set_ylabel('Avg Remaining Months', fontsize=12, fontweight='bold')
-        ax3.set_title('Remaining Amortization by Quantile', fontsize=13, fontweight='bold')
-        ax3.set_xticks(quantiles)
-        ax3.grid(True, alpha=0.3, axis='y')
+    # Plot 3-6: Feature distributions
+    feature_cols = [c for c in segment_analysis.columns if c.endswith('_mean') 
+                   and not c.startswith('sens_')]
     
-    # Plot 4: Cost of funds
-    ax4 = fig.add_subplot(gs[1, 0])
-    if 'cost_of_funds_x_mean' in quantile_analysis.columns:
-        ax4.bar(quantiles, quantile_analysis['cost_of_funds_x_mean'], 
-                color='purple', alpha=0.7, edgecolor='black', linewidth=1.5)
-        ax4.set_xlabel('Sensitivity Quantile', fontsize=12, fontweight='bold')
-        ax4.set_ylabel('Avg Cost of Funds', fontsize=12, fontweight='bold')
-        ax4.set_title('Cost of Funds by Quantile', fontsize=13, fontweight='bold')
-        ax4.set_xticks(quantiles)
-        ax4.grid(True, alpha=0.3, axis='y')
+    plot_positions = [(0, 2), (1, 0), (1, 1), (1, 2)]
+    colors = ['seagreen', 'purple', 'orange', 'teal']
     
-    # Plot 5: Prediction mean
-    ax5 = fig.add_subplot(gs[1, 1])
-    if 'prediction_mean' in quantile_analysis.columns:
-        ax5.bar(quantiles, quantile_analysis['prediction_mean'], 
-                color='orange', alpha=0.7, edgecolor='black', linewidth=1.5)
-        ax5.set_xlabel('Sensitivity Quantile', fontsize=12, fontweight='bold')
-        ax5.set_ylabel('Avg Prediction', fontsize=12, fontweight='bold')
-        ax5.set_title('Model Prediction by Quantile', fontsize=13, fontweight='bold')
-        ax5.set_xticks(quantiles)
-        ax5.grid(True, alpha=0.3, axis='y')
+    for idx, feature in enumerate(feature_cols[:4]):
+        if idx < len(plot_positions):
+            ax = fig.add_subplot(gs[plot_positions[idx]])
+            ax.bar(segments, segment_analysis[feature], color=colors[idx],
+                  alpha=0.7, edgecolor='black', linewidth=1.5)
+            
+            feature_name = feature.replace('_mean', '').replace('_', ' ').title()
+            ax.set_xlabel('Sensitivity Segment', fontsize=12, fontweight='bold')
+            ax.set_ylabel(f'Avg {feature_name}', fontsize=12, fontweight='bold')
+            ax.set_title(f'{feature_name} by Segment', fontsize=13, fontweight='bold')
+            ax.grid(True, alpha=0.3, axis='y')
     
-    # Plot 6: Box plot of sensitivity distribution
-    ax6 = fig.add_subplot(gs[1, 2])
-    box_data = [mtg_level[mtg_level['sensitivity_quantile'] == q]['sensitivity_1d_auc'].values 
-                for q in quantiles]
-    bp = ax6.boxplot(box_data, labels=quantiles, patch_artist=True)
-    for patch in bp['boxes']:
-        patch.set_facecolor('lightblue')
-        patch.set_edgecolor('black')
-        patch.set_linewidth(1.5)
-    ax6.set_xlabel('Sensitivity Quantile', fontsize=12, fontweight='bold')
-    ax6.set_ylabel('Sensitivity (AUC)', fontsize=12, fontweight='bold')
-    ax6.set_title('Sensitivity Distribution by Quantile', fontsize=13, fontweight='bold')
-    ax6.grid(True, alpha=0.3, axis='y')
-    
-    # Plot 7: Sensitivity range by quantile (min, mean, max)
-    ax7 = fig.add_subplot(gs[2, :2])
-    x_pos = np.arange(len(quantiles))
-    width = 0.25
-    
-    ax7.bar(x_pos - width, quantile_analysis['sensitivity_1d_auc_min'], 
-            width, label='Min', color='lightcoral', alpha=0.7, edgecolor='black')
-    ax7.bar(x_pos, quantile_analysis['sensitivity_1d_auc_mean'], 
-            width, label='Mean', color='steelblue', alpha=0.7, edgecolor='black')
-    ax7.bar(x_pos + width, quantile_analysis['sensitivity_1d_auc_max'], 
-            width, label='Max', color='lightgreen', alpha=0.7, edgecolor='black')
-    
-    ax7.set_xlabel('Sensitivity Quantile', fontsize=12, fontweight='bold')
-    ax7.set_ylabel('Sensitivity (AUC)', fontsize=12, fontweight='bold')
-    ax7.set_title('Sensitivity Range by Quantile (Min, Mean, Max)', fontsize=13, fontweight='bold')
-    ax7.set_xticks(x_pos)
-    ax7.set_xticklabels(quantiles)
-    ax7.legend()
-    ax7.grid(True, alpha=0.3, axis='y')
-    
-    # Plot 8: Cumulative distribution
-    ax8 = fig.add_subplot(gs[2, 2])
-    sorted_sens = np.sort(mtg_level['sensitivity_1d_auc'].values)
-    cumulative = np.arange(1, len(sorted_sens) + 1) / len(sorted_sens) * 100
-    ax8.plot(sorted_sens, cumulative, linewidth=2.5, color='darkblue')
-    ax8.set_xlabel('Sensitivity (AUC)', fontsize=12, fontweight='bold')
-    ax8.set_ylabel('Cumulative %', fontsize=12, fontweight='bold')
-    ax8.set_title('Cumulative Distribution', fontsize=13, fontweight='bold')
-    ax8.grid(True, alpha=0.3)
-    ax8.axhline(y=50, color='red', linestyle='--', linewidth=2, alpha=0.7, label='Median')
-    ax8.legend()
-    
-    # Plot 9: Sensitivity variance by quantile
-    ax9 = fig.add_subplot(gs[3, 0])
-    ax9.bar(quantiles, quantile_analysis['sensitivity_1d_auc_std'], 
-            color='teal', alpha=0.7, edgecolor='black', linewidth=1.5)
-    ax9.set_xlabel('Sensitivity Quantile', fontsize=12, fontweight='bold')
-    ax9.set_ylabel('Std Dev of Sensitivity', fontsize=12, fontweight='bold')
-    ax9.set_title('Sensitivity Variability by Quantile', fontsize=13, fontweight='bold')
-    ax9.set_xticks(quantiles)
-    ax9.grid(True, alpha=0.3, axis='y')
-    
-    # Plot 10: Quantile comparison heatmap
-    ax10 = fig.add_subplot(gs[3, 1:])
-    
-    # Select key metrics for heatmap
-    heatmap_cols = ['sensitivity_1d_auc_mean', 'remaining_amort_months_x_mean', 
-                    'cost_of_funds_x_mean', 'prediction_mean']
-    heatmap_cols = [c for c in heatmap_cols if c in quantile_analysis.columns]
-    
-    if heatmap_cols:
-        heatmap_data = quantile_analysis[heatmap_cols].T
+    # Plot 7: Box plot of sensitivity distribution
+    ax7 = fig.add_subplot(gs[2, :])
+    if 'sensitivity_segment' in mtg_features.columns:
+        sens_metric = [c for c in mtg_features.columns if c.startswith('sens_')][0]
+        box_data = [mtg_features[mtg_features['sensitivity_segment'] == seg][sens_metric].values
+                   for seg in segments]
+        bp = ax7.boxplot(box_data, labels=segments, patch_artist=True)
+        for patch in bp['boxes']:
+            patch.set_facecolor('lightblue')
+            patch.set_edgecolor('black')
+            patch.set_linewidth(1.5)
         
-        # Normalize for better visualization
-        from sklearn.preprocessing import StandardScaler
-        scaler = StandardScaler()
-        heatmap_normalized = scaler.fit_transform(heatmap_data.values)
-        
-        im = ax10.imshow(heatmap_normalized, cmap='RdYlGn', aspect='auto')
-        ax10.set_xticks(np.arange(len(quantiles)))
-        ax10.set_yticks(np.arange(len(heatmap_cols)))
-        ax10.set_xticklabels(quantiles)
-        ax10.set_yticklabels([c.replace('_mean', '').replace('_', ' ').title() 
-                              for c in heatmap_cols])
-        ax10.set_xlabel('Sensitivity Quantile', fontsize=12, fontweight='bold')
-        ax10.set_title('Feature Comparison Across Quantiles (Normalized)', 
-                      fontsize=13, fontweight='bold')
-        
-        # Add colorbar
-        cbar = plt.colorbar(im, ax=ax10)
-        cbar.set_label('Normalized Value', fontsize=10)
-        
-        # Add values on heatmap
-        for i in range(len(heatmap_cols)):
-            for j in range(len(quantiles)):
-                text = ax10.text(j, i, f'{heatmap_normalized[i, j]:.1f}',
-                               ha="center", va="center", color="black", fontsize=8)
+        ax7.set_xlabel('Sensitivity Segment', fontsize=12, fontweight='bold')
+        ax7.set_ylabel('Sensitivity Distribution', fontsize=12, fontweight='bold')
+        ax7.set_title('Sensitivity Distribution by Segment', fontsize=13, fontweight='bold')
+        ax7.grid(True, alpha=0.3, axis='y')
     
-    plt.suptitle('Comprehensive Quantile Analysis Dashboard', 
-                 fontsize=18, fontweight='bold', y=0.995)
+    plt.suptitle('Segment Analysis Dashboard', fontsize=18, fontweight='bold', y=0.995)
     
-    print("✓ Created visualization dashboard")
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"✓ Saved: {output_path}")
     
     return fig
 
-def main_analysis(df, output_dir='/mnt/user-data/outputs'):
+
+# ============================================================================
+# MODULE 8: MAIN PIPELINE
+# ============================================================================
+
+def run_sensitivity_analysis(df, output_dir, 
+                             mtg_col='mtgnum',
+                             treatment_col='margin_x',
+                             outcome_col='sensitivity',
+                             sensitivity_method='mean',
+                             n_segments=10,
+                             feature_cols=None):
     """
-    Main analysis pipeline - simple NumPy-based approach
+    Complete sensitivity analysis pipeline
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        Input data
+    output_dir : str or Path
+        Directory to save outputs
+    sensitivity_method : str
+        Method for 1D calculation ('mean', 'max', 'auc', 'all')
+    n_segments : int
+        Number of sensitivity segments (default 10)
+    feature_cols : list
+        Features to analyze by segment
+    
+    Returns:
+    --------
+    dict : Analysis results and outputs
     """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
     print("\n" + "="*80)
-    print("MORTGAGE SENSITIVITY ANALYSIS - NUMPY IMPLEMENTATION")
-    print("="*80)
-    print(f"Dataset: {len(df):,} rows, {df['mtgnum'].nunique():,} mortgages")
-    
-    # Step 1: Visualize 200 curves
-    fig1 = visualize_200_curves(df, n_mortgages=6)
-    fig1.savefig(f'{output_dir}/sensitivity_curves_200pts.png', dpi=300, bbox_inches='tight')
-    print(f"   📊 Saved: sensitivity_curves_200pts.png")
-    
-    # Step 2: Calculate 1D sensitivity from 200 points
-    sensitivity_1d = calculate_1d_sensitivity_numpy(df)
-    
-    # Step 3: Rank and create quantiles
-    mtg_level = rank_and_create_quantiles(df, sensitivity_1d, n_quantiles=10)
-    
-    # Step 4: Analyze quantiles
-    quantile_analysis = analyze_quantiles_numpy(mtg_level)
-    
-    # Step 5: Visualize
-    fig2 = visualize_quantile_analysis(quantile_analysis, mtg_level)
-    fig2.savefig(f'{output_dir}/quantile_analysis_dashboard.png', dpi=300, bbox_inches='tight')
-    print(f"   📊 Saved: quantile_analysis_dashboard.png")
-    
-    # Save outputs
-    print("\n" + "="*80)
-    print("SAVING OUTPUT FILES")
+    print("MORTGAGE SENSITIVITY ANALYSIS PIPELINE")
     print("="*80)
     
-    sensitivity_1d.to_csv(f'{output_dir}/sensitivity_1d.csv', index=False)
+    # Step 1: Prepare data
+    df_clean = prepare_data(df, mtg_col, treatment_col, outcome_col)
+    
+    # Step 2: Calculate 1D sensitivity
+    sensitivity_1d = calculate_1d_sensitivity(df_clean, mtg_col, treatment_col,
+                                              outcome_col, sensitivity_method)
+    
+    # Step 3: Create segments
+    sens_metric = [c for c in sensitivity_1d.columns if c.startswith('sens_')][0]
+    mtg_features = create_sensitivity_segments(df_clean, sensitivity_1d, mtg_col,
+                                               n_segments, sens_metric)
+    
+    # Step 4: Analyze segments
+    segment_analysis = analyze_segments(mtg_features, feature_cols)
+    
+    # Step 5: Create visualizations
+    print("\n" + "="*80)
+    print("CREATING VISUALIZATIONS")
+    print("="*80)
+    
+    fig1 = visualize_response_curves(df_clean, mtg_features, mtg_col, treatment_col,
+                                     outcome_col, n_samples=6, by_segment=True,
+                                     output_path=output_dir / 'response_curves.png')
+    
+    fig2 = create_segment_distribution_table(mtg_features, segment_analysis,
+                                             feature_cols,
+                                             output_path=output_dir / 'segment_table.png')
+    
+    fig3 = create_segment_comparison_plots(segment_analysis, mtg_features,
+                                           output_path=output_dir / 'segment_comparison.png')
+    
+    # Step 6: Save data outputs
+    print("\n" + "="*80)
+    print("SAVING DATA FILES")
+    print("="*80)
+    
+    sensitivity_1d.to_csv(output_dir / 'sensitivity_1d.csv', index=False)
     print(f"✓ sensitivity_1d.csv")
     
-    quantile_analysis.to_csv(f'{output_dir}/quantile_analysis.csv')
-    print(f"✓ quantile_analysis.csv")
+    segment_analysis.to_csv(output_dir / 'segment_analysis.csv', index=False)
+    print(f"✓ segment_analysis.csv")
     
-    mtg_level.to_csv(f'{output_dir}/mortgages_with_quantiles.csv', index=False)
-    print(f"✓ mortgages_with_quantiles.csv")
+    mtg_features.to_csv(output_dir / 'mortgages_with_segments.csv', index=False)
+    print(f"✓ mortgages_with_segments.csv")
     
     print("\n" + "="*80)
     print("✅ ANALYSIS COMPLETE!")
     print("="*80)
+    print(f"\n📁 All outputs saved to: {output_dir}")
     
     return {
         'sensitivity_1d': sensitivity_1d,
-        'mtg_level': mtg_level,
-        'quantile_analysis': quantile_analysis
+        'mtg_features': mtg_features,
+        'segment_analysis': segment_analysis,
+        'figures': [fig1, fig2, fig3]
     }
