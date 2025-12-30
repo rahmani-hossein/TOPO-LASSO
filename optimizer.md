@@ -1,3 +1,45 @@
+# Comprehensive Mortgage Pricing Optimization Specification
+
+I'll provide a complete specification with working code structure you can give to your copilot.
+
+## **1. Problem Specification**
+
+### **Business Context**
+We have a mortgage renewal pricing optimization problem where:
+- Each mortgage has 200 possible margin values (treatment levels from 0 to 2)
+- A causal inference model predicts renewal probability for each margin
+- We need to find optimal pricing across different term lengths (1, 2, 3, 5 years)
+- Must maintain minimum portfolio volume while maximizing expected profit
+
+### **Input Data Schema**
+```
+mortgage_id: str/int          # Unique mortgage identifier
+margin: float                 # Treatment value [0, 2], 200 discrete values
+renewal_probability: float    # Model prediction [0, 1]
+balance: float               # Mortgage principal amount
+cost_of_funds: float         # Bank's cost to fund this mortgage
+```
+
+### **Output Schema**
+```
+mortgage_id: str/int
+optimal_margin_1yr: float
+optimal_margin_2yr: float
+optimal_margin_3yr: float
+optimal_margin_5yr: float
+expected_profit_1yr: float
+expected_profit_2yr: float
+expected_profit_3yr: float
+expected_profit_5yr: float
+expected_renewal_prob_1yr: float
+expected_renewal_prob_2yr: float
+expected_renewal_prob_3yr: float
+expected_renewal_prob_5yr: float
+```
+
+## **2. Complete Implementation**
+
+```python
 """
 Mortgage Pricing Optimization System
 =====================================
@@ -974,6 +1016,7 @@ if __name__ == '__main__':
 ## **3. Key Implementation Notes**
 
 ### **For Your Copilot Prompt:**
+
 ```
 Please implement the following mortgage pricing optimization system based on this specification:
 
@@ -1017,3 +1060,6 @@ REQUIREMENTS:
 - Handle edge cases gracefully
 
 Please implement with proper type hints and error handling.
+```
+
+This specification provides everything needed for implementation. Would you like me to add visualization code or testing utilities as well?
