@@ -1,389 +1,345 @@
 """
-Visualize Renewal Probability Curves by Segment
-================================================
+SIMPLE & FAST Segment Visualization
+====================================
 
-This plots all 10 segments to see:
-1. Overall curve shape
-2. Where monotonicity violations occur (curve goes UP instead of DOWN)
-3. Which segments need isotonic regression the most
-
-Run this BEFORE smoothing to diagnose your data.
+Minimal code, maximum speed.
+Just shows your curves - no fancy calculations.
 """
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 
 
-def plot_all_segments(df, save_path='segment_analysis.png'):
+# =============================================================================
+# FUNCTION 1: Quick plot of all 10 segments (SIMPLE)
+# =============================================================================
+
+def plot_segments_simple(df, save_path='segments.png'):
     """
-    Plot renewal probability vs margin for all 10 segments.
-    
-    Highlights violations where higher margin → higher renewal probability
-    (which is unrealistic and will be fixed by isotonic regression)
+    Dead simple: plot all 10 segments.
     
     Args:
-        df: DataFrame with columns [segment, margin, renewal_probability]
-        save_path: Where to save the plot
+        df: DataFrame with columns [segment, margin, prediction]
+        save_path: Where to save
     """
     
-    # Check required columns
-    required = ['segment', 'margin', 'renewal_probability']
-    if not all(col in df.columns for col in required):
-        raise ValueError(f"DataFrame must have columns: {required}")
-    
-    # Get unique segments
     segments = sorted(df['segment'].unique())
-    n_segments = len(segments)
     
-    print(f"Plotting {n_segments} segments...")
-    
-    # Create subplot grid (2 rows x 5 columns for 10 segments)
-    fig, axes = plt.subplots(2, 5, figsize=(20, 8))
+    # Create 2x5 grid
+    fig, axes = plt.subplots(2, 5, figsize=(15, 6))
     axes = axes.flatten()
     
-    # Track statistics
-    violation_stats = []
-    
-    for i, segment in enumerate(segments):
-        ax = axes[i]
-        
+    for i, seg in enumerate(segments):
         # Get data for this segment
-        seg_data = df[df['segment'] == segment].sort_values('margin')
+        data = df[df['segment'] == seg].sort_values('margin')
         
-        margins = seg_data['margin'].values
-        probs = seg_data['renewal_probability'].values
+        # Simple plot
+        axes[i].plot(data['margin'], data['prediction'], 'o-', 
+                    markersize=1, linewidth=0.5, alpha=0.7)
+        axes[i].set_title(f'Segment {seg}', fontsize=9)
+        axes[i].set_ylim([0, 1])
+        axes[i].grid(alpha=0.3)
         
-        # Identify monotonicity violations
-        # Violation = when prob[i+1] > prob[i] (goes UP instead of DOWN)
-        violations = []
-        for j in range(len(margins) - 1):
-            if probs[j+1] > probs[j]:
-                violations.append(j)
-        
-        n_violations = len(violations)
-        pct_violations = 100 * n_violations / (len(margins) - 1)
-        
-        # Store stats
-        violation_stats.append({
-            'segment': segment,
-            'n_violations': n_violations,
-            'pct_violations': pct_violations,
-            'total_points': len(margins)
-        })
-        
-        # Plot the curve
-        ax.plot(margins, probs, 'o-', linewidth=1, markersize=2, 
-               alpha=0.6, color='steelblue', label='Actual')
-        
-        # Highlight violation regions in RED
-        if violations:
-            for v_idx in violations:
-                ax.plot([margins[v_idx], margins[v_idx+1]], 
-                       [probs[v_idx], probs[v_idx+1]], 
-                       'r-', linewidth=2, alpha=0.7)
-        
-        # Formatting
-        ax.set_xlabel('Margin', fontsize=9)
-        ax.set_ylabel('Renewal Probability', fontsize=9)
-        ax.set_title(f'Segment {segment}\n{n_violations} violations ({pct_violations:.1f}%)', 
-                    fontsize=10, fontweight='bold')
-        ax.grid(True, alpha=0.3)
-        ax.set_ylim([0, 1])
-        
-        # Add reference line for ideal monotonic decrease
-        # (just for visual reference)
-        ax.axhline(y=0.5, color='gray', linestyle='--', alpha=0.3, linewidth=0.5)
+        # Only label outer plots
+        if i >= 5:
+            axes[i].set_xlabel('Margin', fontsize=8)
+        if i % 5 == 0:
+            axes[i].set_ylabel('Prediction', fontsize=8)
     
-    # Overall title
-    fig.suptitle('Renewal Probability Curves by Segment\n(Red = Monotonicity Violations)', 
-                fontsize=14, fontweight='bold', y=0.98)
-    
-    # Add legend
-    blue_patch = mpatches.Patch(color='steelblue', label='Predicted Curve')
-    red_patch = mpatches.Patch(color='red', label='Violation (goes UP)')
-    fig.legend(handles=[blue_patch, red_patch], loc='lower center', 
-              ncol=2, fontsize=10, bbox_to_anchor=(0.5, -0.02))
-    
-    plt.tight_layout(rect=[0, 0.02, 1, 0.96])
-    
-    # Save
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    print(f"\n✓ Plot saved to: {save_path}")
-    plt.show()
-    
-    # Print violation statistics
-    print("\n" + "="*70)
-    print("MONOTONICITY VIOLATION ANALYSIS")
-    print("="*70)
-    
-    stats_df = pd.DataFrame(violation_stats).sort_values('n_violations', ascending=False)
-    print(stats_df.to_string(index=False))
-    
-    total_violations = stats_df['n_violations'].sum()
-    total_points = stats_df['total_points'].sum()
-    overall_pct = 100 * total_violations / total_points
-    
-    print(f"\nOverall: {total_violations} violations out of {total_points} transitions ({overall_pct:.2f}%)")
-    
-    # Identify worst segments
-    worst_segments = stats_df[stats_df['pct_violations'] > 10]['segment'].tolist()
-    if worst_segments:
-        print(f"\n⚠ Segments with >10% violations: {worst_segments}")
-        print("  → These need isotonic regression the most!")
-    
-    return stats_df
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=100)
+    plt.close()
+    print(f"✓ Saved to {save_path}")
 
 
-def plot_single_segment_detailed(df, segment_id, save_path=None):
+# =============================================================================
+# FUNCTION 2: Plot just ONE segment (FASTEST)
+# =============================================================================
+
+def plot_one_segment(df, segment_id, save_path=None):
     """
-    Detailed plot for a single segment showing:
-    1. Original curve
-    2. Where violations occur
-    3. What isotonic regression will do
+    Plot a single segment. Super fast.
     
     Args:
-        df: DataFrame with columns [segment, margin, renewal_probability]
-        segment_id: Which segment to plot (0-9)
-        save_path: Optional path to save figure
+        df: DataFrame with columns [segment, margin, prediction]
+        segment_id: Which segment (0-9)
+        save_path: Optional save path
     """
     
-    from sklearn.isotonic import IsotonicRegression
+    # Get data
+    data = df[df['segment'] == segment_id].sort_values('margin')
     
-    # Get data for this segment
-    seg_data = df[df['segment'] == segment_id].sort_values('margin')
-    
-    if len(seg_data) == 0:
-        print(f"No data found for segment {segment_id}")
-        return
-    
-    margins = seg_data['margin'].values
-    probs = seg_data['renewal_probability'].values
-    
-    # Apply isotonic regression
-    iso = IsotonicRegression(increasing=False, out_of_bounds='clip')
-    probs_iso = iso.fit_transform(margins, probs)
-    
-    # Create figure
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-    
-    # ===== LEFT PLOT: Before (with violations highlighted) =====
-    ax1.plot(margins, probs, 'o-', linewidth=1.5, markersize=4, 
-            alpha=0.6, color='steelblue', label='Original')
-    
-    # Highlight violations
-    for i in range(len(margins) - 1):
-        if probs[i+1] > probs[i]:
-            ax1.plot([margins[i], margins[i+1]], 
-                    [probs[i], probs[i+1]], 
-                    'r-', linewidth=3, alpha=0.7)
-            ax1.scatter([margins[i], margins[i+1]], 
-                       [probs[i], probs[i+1]], 
-                       color='red', s=50, zorder=5)
-    
-    ax1.set_xlabel('Margin', fontsize=11)
-    ax1.set_ylabel('Renewal Probability', fontsize=11)
-    ax1.set_title('BEFORE: Original Predictions\n(Red = Violations)', fontsize=12, fontweight='bold')
-    ax1.grid(True, alpha=0.3)
-    ax1.set_ylim([0, 1])
-    ax1.legend()
-    
-    # ===== RIGHT PLOT: After isotonic regression =====
-    ax2.plot(margins, probs, 'o', markersize=4, alpha=0.3, 
-            color='lightgray', label='Original (ghosted)')
-    ax2.plot(margins, probs_iso, 'o-', linewidth=2, markersize=4, 
-            color='darkgreen', label='After Isotonic', alpha=0.8)
-    
-    ax2.set_xlabel('Margin', fontsize=11)
-    ax2.set_ylabel('Renewal Probability', fontsize=11)
-    ax2.set_title('AFTER: Isotonic Regression\n(Monotonic Decreasing)', fontsize=12, fontweight='bold')
-    ax2.grid(True, alpha=0.3)
-    ax2.set_ylim([0, 1])
-    ax2.legend()
-    
-    # Overall title
-    fig.suptitle(f'Segment {segment_id}: Isotonic Regression Effect', 
-                fontsize=14, fontweight='bold')
-    
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    # Plot
+    plt.figure(figsize=(8, 5))
+    plt.plot(data['margin'], data['prediction'], 'o-', 
+            markersize=3, linewidth=1, alpha=0.7)
+    plt.xlabel('Margin', fontsize=11)
+    plt.ylabel('Prediction (Renewal Probability)', fontsize=11)
+    plt.title(f'Segment {segment_id}', fontsize=12, fontweight='bold')
+    plt.grid(alpha=0.3)
+    plt.ylim([0, 1])
     
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"✓ Saved to: {save_path}")
-    
-    plt.show()
-    
-    # Print statistics
-    n_violations = sum(1 for i in range(len(probs)-1) if probs[i+1] > probs[i])
-    max_violation = max([probs[i+1] - probs[i] for i in range(len(probs)-1) if probs[i+1] > probs[i]], 
-                       default=0)
-    
-    print(f"\nSegment {segment_id} Statistics:")
-    print(f"  Violations: {n_violations} out of {len(margins)-1} transitions")
-    print(f"  Largest violation: {max_violation:.4f}")
-    print(f"  Range before: [{probs.min():.3f}, {probs.max():.3f}]")
-    print(f"  Range after:  [{probs_iso.min():.3f}, {probs_iso.max():.3f}]")
+        plt.savefig(save_path, dpi=100)
+        plt.close()
+        print(f"✓ Saved to {save_path}")
+    else:
+        plt.show()
 
 
-def compare_before_after_all_segments(df, smoothing_strength=0.03, save_path='before_after_comparison.png'):
+# =============================================================================
+# FUNCTION 3: Show violations (RED highlights)
+# =============================================================================
+
+def plot_with_violations(df, segment_id, save_path=None):
     """
-    Show all 10 segments in a 2x10 grid:
-    - Top row: Original (noisy)
-    - Bottom row: After isotonic + spline smoothing
+    Plot one segment with violations highlighted in RED.
     
     Args:
-        df: DataFrame
-        smoothing_strength: Spline parameter
-        save_path: Where to save
+        df: DataFrame with columns [segment, margin, prediction]
+        segment_id: Which segment (0-9)
+        save_path: Optional save path
+    """
+    
+    # Get data
+    data = df[df['segment'] == segment_id].sort_values('margin')
+    margins = data['margin'].values
+    probs = data['prediction'].values
+    
+    # Plot base curve
+    plt.figure(figsize=(8, 5))
+    plt.plot(margins, probs, 'o-', markersize=3, linewidth=1, 
+            alpha=0.5, color='blue', label='Curve')
+    
+    # Highlight violations (where it goes UP)
+    for i in range(len(margins) - 1):
+        if probs[i+1] > probs[i]:
+            plt.plot([margins[i], margins[i+1]], 
+                    [probs[i], probs[i+1]], 
+                    'r-', linewidth=2, alpha=0.8)
+    
+    plt.xlabel('Margin', fontsize=11)
+    plt.ylabel('Prediction (Renewal Probability)', fontsize=11)
+    plt.title(f'Segment {segment_id} (Red = Goes UP)', fontsize=12, fontweight='bold')
+    plt.grid(alpha=0.3)
+    plt.ylim([0, 1])
+    
+    if save_path:
+        plt.savefig(save_path, dpi=100)
+        plt.close()
+        print(f"✓ Saved to {save_path}")
+    else:
+        plt.show()
+
+
+# =============================================================================
+# FUNCTION 4: Before/After comparison (ONE segment)
+# =============================================================================
+
+def plot_before_after(df, segment_id, save_path=None):
+    """
+    Show before (noisy) and after (smooth) for one segment.
+    
+    Args:
+        df: DataFrame with columns [segment, margin, prediction]
+        segment_id: Which segment (0-9)
+        save_path: Optional save path
     """
     
     from scipy.interpolate import UnivariateSpline
     from sklearn.isotonic import IsotonicRegression
     
-    segments = sorted(df['segment'].unique())
+    # Get data
+    data = df[df['segment'] == segment_id].sort_values('margin')
+    margins = data['margin'].values
+    probs = data['prediction'].values
     
-    fig, axes = plt.subplots(2, 10, figsize=(25, 6))
+    # Apply smoothing
+    iso = IsotonicRegression(increasing=False, out_of_bounds='clip')
+    probs_iso = iso.fit_transform(margins, probs)
     
-    for i, segment in enumerate(segments):
-        seg_data = df[df['segment'] == segment].sort_values('margin')
-        
-        margins = seg_data['margin'].values
-        probs = seg_data['renewal_probability'].values
-        
-        # Apply smoothing
-        iso = IsotonicRegression(increasing=False, out_of_bounds='clip')
-        probs_iso = iso.fit_transform(margins, probs)
-        
-        try:
-            spline = UnivariateSpline(margins, probs_iso, s=smoothing_strength, k=3)
-            probs_smooth = np.clip(spline(margins), 0, 1)
-        except:
-            probs_smooth = probs_iso
-        
-        # Top row: Original
-        axes[0, i].plot(margins, probs, 'o-', linewidth=1, markersize=1.5, 
-                       alpha=0.5, color='steelblue')
-        axes[0, i].set_ylim([0, 1])
-        axes[0, i].set_title(f'Seg {segment}', fontsize=9)
-        axes[0, i].grid(True, alpha=0.2)
-        if i == 0:
-            axes[0, i].set_ylabel('Original', fontsize=10, fontweight='bold')
-        axes[0, i].set_xticks([])
-        
-        # Bottom row: Smoothed
-        axes[1, i].plot(margins, probs_smooth, '-', linewidth=2, 
-                       color='darkgreen', alpha=0.8)
-        axes[1, i].set_ylim([0, 1])
-        axes[1, i].grid(True, alpha=0.2)
-        if i == 0:
-            axes[1, i].set_ylabel('Smoothed', fontsize=10, fontweight='bold')
-        axes[1, i].set_xlabel('Margin', fontsize=8)
+    try:
+        spline = UnivariateSpline(margins, probs_iso, s=0.03, k=3)
+        probs_smooth = np.clip(spline(margins), 0, 1)
+    except:
+        probs_smooth = probs_iso
     
-    fig.suptitle('Before vs After: All Segments', fontsize=14, fontweight='bold')
-    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    # Plot
+    plt.figure(figsize=(10, 5))
     
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    print(f"✓ Saved comparison to: {save_path}")
-    plt.show()
+    plt.plot(margins, probs, 'o', markersize=3, alpha=0.3, 
+            color='gray', label='Original')
+    plt.plot(margins, probs_smooth, '-', linewidth=2, 
+            color='green', label='Smoothed')
+    
+    plt.xlabel('Margin', fontsize=11)
+    plt.ylabel('Prediction (Renewal Probability)', fontsize=11)
+    plt.title(f'Segment {segment_id}: Before → After', fontsize=12, fontweight='bold')
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.ylim([0, 1])
+    
+    if save_path:
+        plt.savefig(save_path, dpi=100)
+        plt.close()
+        print(f"✓ Saved to {save_path}")
+    else:
+        plt.show()
+
+
+# =============================================================================
+# FUNCTION 5: Count violations (FAST - no plotting)
+# =============================================================================
+
+def count_violations(df):
+    """
+    Just count violations per segment. No plotting.
+    Super fast.
+    
+    Args:
+        df: DataFrame with columns [segment, margin, prediction]
+    
+    Returns:
+        DataFrame with violation counts
+    """
+    
+    results = []
+    
+    for seg in sorted(df['segment'].unique()):
+        data = df[df['segment'] == seg].sort_values('margin')
+        probs = data['prediction'].values
+        
+        # Count violations
+        violations = sum(1 for i in range(len(probs)-1) if probs[i+1] > probs[i])
+        pct = 100 * violations / (len(probs) - 1) if len(probs) > 1 else 0
+        
+        results.append({
+            'segment': seg,
+            'violations': violations,
+            'percent': pct
+        })
+    
+    stats = pd.DataFrame(results).sort_values('violations', ascending=False)
+    
+    print("\nViolation Counts:")
+    print(stats.to_string(index=False))
+    
+    return stats
 
 
 # =============================================================================
 # USAGE EXAMPLES
 # =============================================================================
 
-def example_analysis():
-    """
-    Example showing how to analyze your data.
-    """
-    
-    print("="*70)
-    print("EXAMPLE: Analyzing Renewal Probability Curves")
-    print("="*70)
-    
-    # Create synthetic data (replace with your actual data)
-    np.random.seed(42)
-    
-    n_mortgages = 100
-    n_segments = 10
-    n_margins = 200
-    
-    data = []
-    for mort_id in range(n_mortgages):
-        segment = mort_id % n_segments
-        
-        # Different segments have different behaviors
-        sensitivity = 1.0 + (segment / n_segments) * 2.0
-        
-        for margin in np.linspace(0, 2, n_margins):
-            # True curve (decreasing)
-            true_prob = 0.95 * np.exp(-sensitivity * margin)
-            
-            # Add noise (this creates violations!)
-            noise = np.random.normal(0, 0.05)
-            renewal_prob = np.clip(true_prob + noise, 0, 1)
-            
-            data.append({
-                'mortgage_id': f'M{mort_id:04d}',
-                'segment': segment,
-                'margin': margin,
-                'renewal_probability': renewal_prob
-            })
-    
-    df = pd.DataFrame(data)
-    print(f"Created {len(df)} rows for analysis\n")
-    
-    # 1. Plot all segments to see violations
-    print("1. Plotting all segments...")
-    stats = plot_all_segments(df, save_path='all_segments_violations.png')
-    
-    # 2. Detailed view of worst segment
-    print("\n2. Detailed analysis of worst segment...")
-    worst_segment = stats.iloc[0]['segment']
-    plot_single_segment_detailed(df, segment_id=worst_segment, 
-                                save_path=f'segment_{worst_segment}_detailed.png')
-    
-    # 3. Before/after comparison
-    print("\n3. Before/after comparison for all segments...")
-    compare_before_after_all_segments(df, smoothing_strength=0.03, 
-                                     save_path='before_after_all.png')
-    
-    print("\n" + "="*70)
-    print("ANALYSIS COMPLETE")
-    print("="*70)
-    print("\nGenerated files:")
-    print("  1. all_segments_violations.png - Overview of all segments")
-    print(f"  2. segment_{worst_segment}_detailed.png - Detailed view of worst segment")
-    print("  3. before_after_all.png - Before/after comparison")
-
-
-# =============================================================================
-# YOUR ACTUAL USAGE
-# =============================================================================
-
 """
-HOW TO USE WITH YOUR DATA:
-
+EXAMPLE 1: Quick plot of all segments
+--------------------------------------
 import pandas as pd
-from segment_visualization import plot_all_segments, plot_single_segment_detailed
+from simple_viz import plot_segments_simple
 
-# Load your data
 df = pd.read_csv('your_data.csv')
+# df must have columns: segment, margin, prediction
+plot_segments_simple(df, save_path='all_segments.png')
 
-# Must have columns: segment, margin, renewal_probability
-# segment should be 0-9 (10 values)
-# margin should have 200 values per segment
 
-# 1. Plot all segments to see violations
-stats = plot_all_segments(df, save_path='my_segment_analysis.png')
+EXAMPLE 2: Look at one segment
+-------------------------------
+from simple_viz import plot_one_segment
 
-# 2. Look at a specific segment in detail (e.g., segment 3)
-plot_single_segment_detailed(df, segment_id=3, save_path='segment_3_detail.png')
+plot_one_segment(df, segment_id=0, save_path='segment_0.png')
 
-# 3. See before/after for all segments
-compare_before_after_all_segments(df, save_path='my_before_after.png')
+
+EXAMPLE 3: See violations for one segment
+------------------------------------------
+from simple_viz import plot_with_violations
+
+plot_with_violations(df, segment_id=0, save_path='seg_0_violations.png')
+
+
+EXAMPLE 4: Before/after for one segment
+----------------------------------------
+from simple_viz import plot_before_after
+
+plot_before_after(df, segment_id=0, save_path='seg_0_smooth.png')
+
+
+EXAMPLE 5: Just count violations (no plot)
+-------------------------------------------
+from simple_viz import count_violations
+
+stats = count_violations(df)
 """
+
+
+# =============================================================================
+# RUN ALL (if you want everything at once)
+# =============================================================================
+
+def analyze_all_segments(df, output_dir='.'):
+    """
+    Run all analyses. Creates multiple files.
+    
+    Args:
+        df: Your dataframe with columns [segment, margin, prediction]
+        output_dir: Where to save files
+    """
+    
+    import os
+    
+    print("Analyzing segments...")
+    
+    # 1. Count violations (fast - no plotting)
+    print("\n1. Counting violations...")
+    stats = count_violations(df)
+    
+    # 2. Plot all segments overview
+    print("\n2. Plotting all segments...")
+    plot_segments_simple(df, save_path=f'{output_dir}/all_segments.png')
+    
+    # 3. Detailed plots for worst 3 segments
+    print("\n3. Detailed plots for worst segments...")
+    worst_3 = stats.head(3)['segment'].tolist()
+    
+    for seg in worst_3:
+        seg = int(seg)
+        plot_with_violations(df, seg, f'{output_dir}/segment_{seg}_violations.png')
+        plot_before_after(df, seg, f'{output_dir}/segment_{seg}_smooth.png')
+    
+    print(f"\n✓ Done! Check {output_dir}/ for files")
+    
+    return stats
+
+
+# =============================================================================
+# SIMPLEST POSSIBLE USAGE
+# =============================================================================
 
 if __name__ == '__main__':
-    # Run example
-    example_analysis()
+    """
+    Just run this file:
+    
+    python simple_viz.py
+    
+    (Edit the filename below)
+    """
+    
+    import pandas as pd
+    import sys
+    
+    # EDIT THIS LINE WITH YOUR FILENAME:
+    filename = 'test_data.csv' if len(sys.argv) == 1 else sys.argv[1]
+    
+    print(f"Loading {filename}...")
+    df = pd.read_csv(filename)
+    print(f"Loaded {len(df)} rows, {df['segment'].nunique()} segments")
+    
+    # Run analysis
+    stats = analyze_all_segments(df)
+    
+    print("\n" + "="*50)
+    print("Files created:")
+    print("  - all_segments.png")
+    print("  - segment_X_violations.png (for worst 3)")
+    print("  - segment_X_smooth.png (for worst 3)")
+    print("="*50)
