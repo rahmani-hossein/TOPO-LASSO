@@ -1,9 +1,9 @@
 """
-SIMPLE & FAST Segment Visualization
-====================================
+Simple Segment Visualization - All Segments on One Plot
+========================================================
 
-Minimal code, maximum speed.
-Just shows your curves - no fancy calculations.
+Shows all 10 segments as colored curves on a single plot.
+Each curve shows the MEAN prediction at each margin for that segment.
 """
 
 import numpy as np
@@ -11,221 +11,309 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-# =============================================================================
-# FUNCTION 1: Quick plot of all 10 segments (SIMPLE)
-# =============================================================================
-
-def plot_segments_simple(df, save_path='segments.png'):
+def plot_all_segments_together(df, save_path='segments_plot.png', show_plot=True):
     """
-    Dead simple: plot all 10 segments.
+    Plot all 10 segments on one graph, each with its own color.
+    
+    Each curve shows the mean prediction at each margin for that segment.
     
     Args:
         df: DataFrame with columns [segment, margin, prediction]
-        save_path: Where to save
+        save_path: Where to save the plot
+        show_plot: Whether to display the plot
+    
+    Returns:
+        DataFrame with aggregated data (segment, margin, mean_prediction)
     """
     
-    segments = sorted(df['segment'].unique())
+    print("Creating plot with all segments...")
     
-    # Create 2x5 grid
-    fig, axes = plt.subplots(2, 5, figsize=(15, 6))
-    axes = axes.flatten()
+    # Calculate mean prediction for each (segment, margin) combination
+    agg_data = df.groupby(['segment', 'margin']).agg({
+        'prediction': 'mean'
+    }).reset_index()
+    
+    agg_data = agg_data.rename(columns={'prediction': 'mean_prediction'})
+    
+    # Create figure
+    plt.figure(figsize=(12, 7))
+    
+    # Define colors for each segment
+    colors = plt.cm.tab10(np.linspace(0, 1, 10))
+    
+    # Plot each segment
+    segments = sorted(agg_data['segment'].unique())
     
     for i, seg in enumerate(segments):
-        # Get data for this segment
-        data = df[df['segment'] == seg].sort_values('margin')
+        seg_data = agg_data[agg_data['segment'] == seg].sort_values('margin')
         
-        # Simple plot
-        axes[i].plot(data['margin'], data['prediction'], 'o-', 
-                    markersize=1, linewidth=0.5, alpha=0.7)
-        axes[i].set_title(f'Segment {seg}', fontsize=9)
-        axes[i].set_ylim([0, 1])
-        axes[i].grid(alpha=0.3)
-        
-        # Only label outer plots
-        if i >= 5:
-            axes[i].set_xlabel('Margin', fontsize=8)
-        if i % 5 == 0:
-            axes[i].set_ylabel('Prediction', fontsize=8)
+        plt.plot(seg_data['margin'], 
+                seg_data['mean_prediction'], 
+                linewidth=2, 
+                label=f'Segment {seg}',
+                color=colors[i],
+                alpha=0.8)
     
+    # Formatting
+    plt.xlabel('Margin', fontsize=12)
+    plt.ylabel('Mean Prediction (Renewal Probability)', fontsize=12)
+    plt.title('Prediction Curves by Segment\n(Mean prediction at each margin)', 
+             fontsize=14, fontweight='bold')
+    plt.legend(loc='upper right', fontsize=10, ncol=2)
+    plt.grid(True, alpha=0.3)
+    plt.ylim([0, 1])
+    
+    # Save
     plt.tight_layout()
-    plt.savefig(save_path, dpi=100)
-    plt.close()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
     print(f"✓ Saved to {save_path}")
-
-
-# =============================================================================
-# FUNCTION 2: Plot just ONE segment (FASTEST)
-# =============================================================================
-
-def plot_one_segment(df, segment_id, save_path=None):
-    """
-    Plot a single segment. Super fast.
     
-    Args:
-        df: DataFrame with columns [segment, margin, prediction]
-        segment_id: Which segment (0-9)
-        save_path: Optional save path
-    """
-    
-    # Get data
-    data = df[df['segment'] == segment_id].sort_values('margin')
-    
-    # Plot
-    plt.figure(figsize=(8, 5))
-    plt.plot(data['margin'], data['prediction'], 'o-', 
-            markersize=3, linewidth=1, alpha=0.7)
-    plt.xlabel('Margin', fontsize=11)
-    plt.ylabel('Prediction (Renewal Probability)', fontsize=11)
-    plt.title(f'Segment {segment_id}', fontsize=12, fontweight='bold')
-    plt.grid(alpha=0.3)
-    plt.ylim([0, 1])
-    
-    if save_path:
-        plt.savefig(save_path, dpi=100)
-        plt.close()
-        print(f"✓ Saved to {save_path}")
-    else:
+    if show_plot:
         plt.show()
-
-
-# =============================================================================
-# FUNCTION 3: Show violations (RED highlights)
-# =============================================================================
-
-def plot_with_violations(df, segment_id, save_path=None):
-    """
-    Plot one segment with violations highlighted in RED.
-    
-    Args:
-        df: DataFrame with columns [segment, margin, prediction]
-        segment_id: Which segment (0-9)
-        save_path: Optional save path
-    """
-    
-    # Get data
-    data = df[df['segment'] == segment_id].sort_values('margin')
-    margins = data['margin'].values
-    probs = data['prediction'].values
-    
-    # Plot base curve
-    plt.figure(figsize=(8, 5))
-    plt.plot(margins, probs, 'o-', markersize=3, linewidth=1, 
-            alpha=0.5, color='blue', label='Curve')
-    
-    # Highlight violations (where it goes UP)
-    for i in range(len(margins) - 1):
-        if probs[i+1] > probs[i]:
-            plt.plot([margins[i], margins[i+1]], 
-                    [probs[i], probs[i+1]], 
-                    'r-', linewidth=2, alpha=0.8)
-    
-    plt.xlabel('Margin', fontsize=11)
-    plt.ylabel('Prediction (Renewal Probability)', fontsize=11)
-    plt.title(f'Segment {segment_id} (Red = Goes UP)', fontsize=12, fontweight='bold')
-    plt.grid(alpha=0.3)
-    plt.ylim([0, 1])
-    
-    if save_path:
-        plt.savefig(save_path, dpi=100)
-        plt.close()
-        print(f"✓ Saved to {save_path}")
     else:
-        plt.show()
+        plt.close()
+    
+    return agg_data
 
 
-# =============================================================================
-# FUNCTION 4: Before/After comparison (ONE segment)
-# =============================================================================
-
-def plot_before_after(df, segment_id, save_path=None):
+def plot_segments_with_smoothing(df, smoothing_strength=0.03, 
+                                 save_path='segments_smooth.png', show_plot=True):
     """
-    Show before (noisy) and after (smooth) for one segment.
+    Plot all segments with both original and smoothed curves.
+    
+    Shows:
+    - Dotted lines: Original mean predictions
+    - Solid lines: Smoothed predictions
     
     Args:
         df: DataFrame with columns [segment, margin, prediction]
-        segment_id: Which segment (0-9)
-        save_path: Optional save path
+        smoothing_strength: Spline smoothing parameter
+        save_path: Where to save
+        show_plot: Whether to display
     """
     
     from scipy.interpolate import UnivariateSpline
     from sklearn.isotonic import IsotonicRegression
     
-    # Get data
-    data = df[df['segment'] == segment_id].sort_values('margin')
-    margins = data['margin'].values
-    probs = data['prediction'].values
+    print("Creating plot with smoothing...")
     
-    # Apply smoothing
-    iso = IsotonicRegression(increasing=False, out_of_bounds='clip')
-    probs_iso = iso.fit_transform(margins, probs)
+    # Calculate mean prediction for each (segment, margin)
+    agg_data = df.groupby(['segment', 'margin']).agg({
+        'prediction': 'mean'
+    }).reset_index()
     
-    try:
-        spline = UnivariateSpline(margins, probs_iso, s=0.03, k=3)
-        probs_smooth = np.clip(spline(margins), 0, 1)
-    except:
-        probs_smooth = probs_iso
+    # Create figure
+    plt.figure(figsize=(12, 7))
     
-    # Plot
-    plt.figure(figsize=(10, 5))
+    # Colors
+    colors = plt.cm.tab10(np.linspace(0, 1, 10))
     
-    plt.plot(margins, probs, 'o', markersize=3, alpha=0.3, 
-            color='gray', label='Original')
-    plt.plot(margins, probs_smooth, '-', linewidth=2, 
-            color='green', label='Smoothed')
+    segments = sorted(agg_data['segment'].unique())
     
-    plt.xlabel('Margin', fontsize=11)
-    plt.ylabel('Prediction (Renewal Probability)', fontsize=11)
-    plt.title(f'Segment {segment_id}: Before → After', fontsize=12, fontweight='bold')
-    plt.legend()
-    plt.grid(alpha=0.3)
+    for i, seg in enumerate(segments):
+        seg_data = agg_data[agg_data['segment'] == seg].sort_values('margin')
+        
+        margins = seg_data['margin'].values
+        probs = seg_data['prediction'].values
+        
+        # Apply smoothing
+        iso = IsotonicRegression(increasing=False, out_of_bounds='clip')
+        probs_iso = iso.fit_transform(margins, probs)
+        
+        try:
+            spline = UnivariateSpline(margins, probs_iso, s=smoothing_strength, k=3)
+            probs_smooth = np.clip(spline(margins), 0, 1)
+        except:
+            probs_smooth = probs_iso
+        
+        # Plot original (dotted)
+        plt.plot(margins, probs, '--', 
+                linewidth=1, color=colors[i], alpha=0.4)
+        
+        # Plot smoothed (solid)
+        plt.plot(margins, probs_smooth, '-', 
+                linewidth=2.5, color=colors[i], alpha=0.9,
+                label=f'Segment {seg}')
+    
+    # Formatting
+    plt.xlabel('Margin', fontsize=12)
+    plt.ylabel('Mean Prediction (Renewal Probability)', fontsize=12)
+    plt.title('Smoothed Prediction Curves by Segment\n(Solid = Smoothed, Dotted = Original)', 
+             fontsize=14, fontweight='bold')
+    plt.legend(loc='upper right', fontsize=10, ncol=2)
+    plt.grid(True, alpha=0.3)
     plt.ylim([0, 1])
     
-    if save_path:
-        plt.savefig(save_path, dpi=100)
-        plt.close()
-        print(f"✓ Saved to {save_path}")
-    else:
+    # Save
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    print(f"✓ Saved to {save_path}")
+    
+    if show_plot:
         plt.show()
+    else:
+        plt.close()
 
 
-# =============================================================================
-# FUNCTION 5: Count violations (FAST - no plotting)
-# =============================================================================
-
-def count_violations(df):
+def plot_segments_interactive(df, save_path='segments_interactive.png', show_plot=True):
     """
-    Just count violations per segment. No plotting.
-    Super fast.
+    Plot with larger figure and better readability.
+    Good for presentations or detailed analysis.
+    
+    Args:
+        df: DataFrame with columns [segment, margin, prediction]
+        save_path: Where to save
+        show_plot: Whether to display
+    """
+    
+    print("Creating interactive-style plot...")
+    
+    # Aggregate
+    agg_data = df.groupby(['segment', 'margin']).agg({
+        'prediction': 'mean'
+    }).reset_index()
+    
+    # Create larger figure
+    fig, ax = plt.subplots(figsize=(14, 8))
+    
+    # Nice colors
+    colors = plt.cm.Set3(np.linspace(0, 1, 10))
+    
+    segments = sorted(agg_data['segment'].unique())
+    
+    for i, seg in enumerate(segments):
+        seg_data = agg_data[agg_data['segment'] == seg].sort_values('margin')
+        
+        ax.plot(seg_data['margin'], 
+               seg_data['prediction'], 
+               linewidth=3, 
+               label=f'Segment {seg}',
+               color=colors[i],
+               marker='o',
+               markersize=2,
+               alpha=0.85)
+    
+    # Formatting
+    ax.set_xlabel('Margin', fontsize=14, fontweight='bold')
+    ax.set_ylabel('Mean Prediction (Renewal Probability)', fontsize=14, fontweight='bold')
+    ax.set_title('Prediction Curves by Segment', fontsize=16, fontweight='bold', pad=20)
+    ax.legend(loc='upper right', fontsize=12, ncol=2, framealpha=0.95)
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.set_ylim([0, 1])
+    
+    # Add minor gridlines
+    ax.grid(True, which='minor', alpha=0.1)
+    ax.minorticks_on()
+    
+    # Save
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=200, bbox_inches='tight')
+    print(f"✓ Saved to {save_path}")
+    
+    if show_plot:
+        plt.show()
+    else:
+        plt.close()
+
+
+def compare_segments_stats(df):
+    """
+    Show statistics about each segment's prediction curve.
     
     Args:
         df: DataFrame with columns [segment, margin, prediction]
     
     Returns:
-        DataFrame with violation counts
+        DataFrame with segment statistics
     """
     
-    results = []
+    print("\nSegment Statistics:")
+    print("="*70)
+    
+    stats = []
     
     for seg in sorted(df['segment'].unique()):
-        data = df[df['segment'] == seg].sort_values('margin')
-        probs = data['prediction'].values
+        seg_data = df[df['segment'] == seg].sort_values('margin')
+        
+        # Calculate mean prediction curve
+        mean_curve = seg_data.groupby('margin')['prediction'].mean()
         
         # Count violations
-        violations = sum(1 for i in range(len(probs)-1) if probs[i+1] > probs[i])
-        pct = 100 * violations / (len(probs) - 1) if len(probs) > 1 else 0
+        violations = sum(1 for i in range(len(mean_curve)-1) 
+                        if mean_curve.iloc[i+1] > mean_curve.iloc[i])
         
-        results.append({
+        stats.append({
             'segment': seg,
-            'violations': violations,
-            'percent': pct
+            'mean_prediction': seg_data['prediction'].mean(),
+            'std_prediction': seg_data['prediction'].std(),
+            'min_prediction': seg_data['prediction'].min(),
+            'max_prediction': seg_data['prediction'].max(),
+            'violations_in_mean_curve': violations,
+            'n_points': len(seg_data)
         })
     
-    stats = pd.DataFrame(results).sort_values('violations', ascending=False)
+    stats_df = pd.DataFrame(stats)
+    print(stats_df.to_string(index=False))
     
-    print("\nViolation Counts:")
-    print(stats.to_string(index=False))
+    return stats_df
+
+
+# =============================================================================
+# COMPLETE ANALYSIS
+# =============================================================================
+
+def analyze_segments(df, smoothing_strength=0.03, output_dir='.'):
+    """
+    Complete analysis with multiple visualizations.
     
-    return stats
+    Args:
+        df: DataFrame with [segment, margin, prediction]
+        smoothing_strength: For smoothed plot
+        output_dir: Where to save files
+    
+    Returns:
+        Dictionary with stats and aggregated data
+    """
+    
+    print("="*70)
+    print("SEGMENT ANALYSIS")
+    print("="*70)
+    
+    # 1. Statistics
+    print("\n1. Computing statistics...")
+    stats = compare_segments_stats(df)
+    
+    # 2. Basic plot
+    print("\n2. Creating basic plot...")
+    agg_data = plot_all_segments_together(df, 
+                                          save_path=f'{output_dir}/segments_all.png',
+                                          show_plot=False)
+    
+    # 3. Smoothed plot
+    print("\n3. Creating smoothed plot...")
+    plot_segments_with_smoothing(df, 
+                                smoothing_strength=smoothing_strength,
+                                save_path=f'{output_dir}/segments_smoothed.png',
+                                show_plot=False)
+    
+    # 4. Interactive style
+    print("\n4. Creating presentation-quality plot...")
+    plot_segments_interactive(df, 
+                             save_path=f'{output_dir}/segments_presentation.png',
+                             show_plot=False)
+    
+    print("\n" + "="*70)
+    print("COMPLETE!")
+    print("="*70)
+    print(f"\nFiles created in {output_dir}:")
+    print("  1. segments_all.png - All segments on one plot")
+    print("  2. segments_smoothed.png - With smoothing applied")
+    print("  3. segments_presentation.png - High quality for presentations")
+    
+    return {
+        'stats': stats,
+        'aggregated_data': agg_data
+    }
 
 
 # =============================================================================
@@ -233,113 +321,83 @@ def count_violations(df):
 # =============================================================================
 
 """
-EXAMPLE 1: Quick plot of all segments
---------------------------------------
+EXAMPLE 1: Quick plot
+---------------------
 import pandas as pd
-from simple_viz import plot_segments_simple
+from plot_segments import plot_all_segments_together
 
 df = pd.read_csv('your_data.csv')
-# df must have columns: segment, margin, prediction
-plot_segments_simple(df, save_path='all_segments.png')
+# Must have: segment, margin, prediction
+
+plot_all_segments_together(df, save_path='my_plot.png')
 
 
-EXAMPLE 2: Look at one segment
--------------------------------
-from simple_viz import plot_one_segment
+EXAMPLE 2: With smoothing
+--------------------------
+from plot_segments import plot_segments_with_smoothing
 
-plot_one_segment(df, segment_id=0, save_path='segment_0.png')
-
-
-EXAMPLE 3: See violations for one segment
-------------------------------------------
-from simple_viz import plot_with_violations
-
-plot_with_violations(df, segment_id=0, save_path='seg_0_violations.png')
+plot_segments_with_smoothing(df, smoothing_strength=0.03, 
+                            save_path='smooth_plot.png')
 
 
-EXAMPLE 4: Before/after for one segment
-----------------------------------------
-from simple_viz import plot_before_after
+EXAMPLE 3: Complete analysis
+-----------------------------
+from plot_segments import analyze_segments
 
-plot_before_after(df, segment_id=0, save_path='seg_0_smooth.png')
+results = analyze_segments(df, smoothing_strength=0.03)
+# Creates 3 plots + statistics
 
 
-EXAMPLE 5: Just count violations (no plot)
--------------------------------------------
-from simple_viz import count_violations
+EXAMPLE 4: Just statistics
+---------------------------
+from plot_segments import compare_segments_stats
 
-stats = count_violations(df)
+stats = compare_segments_stats(df)
+print(stats)
 """
 
 
-# =============================================================================
-# RUN ALL (if you want everything at once)
-# =============================================================================
-
-def analyze_all_segments(df, output_dir='.'):
-    """
-    Run all analyses. Creates multiple files.
-    
-    Args:
-        df: Your dataframe with columns [segment, margin, prediction]
-        output_dir: Where to save files
-    """
-    
-    import os
-    
-    print("Analyzing segments...")
-    
-    # 1. Count violations (fast - no plotting)
-    print("\n1. Counting violations...")
-    stats = count_violations(df)
-    
-    # 2. Plot all segments overview
-    print("\n2. Plotting all segments...")
-    plot_segments_simple(df, save_path=f'{output_dir}/all_segments.png')
-    
-    # 3. Detailed plots for worst 3 segments
-    print("\n3. Detailed plots for worst segments...")
-    worst_3 = stats.head(3)['segment'].tolist()
-    
-    for seg in worst_3:
-        seg = int(seg)
-        plot_with_violations(df, seg, f'{output_dir}/segment_{seg}_violations.png')
-        plot_before_after(df, seg, f'{output_dir}/segment_{seg}_smooth.png')
-    
-    print(f"\n✓ Done! Check {output_dir}/ for files")
-    
-    return stats
-
-
-# =============================================================================
-# SIMPLEST POSSIBLE USAGE
-# =============================================================================
-
 if __name__ == '__main__':
     """
-    Just run this file:
-    
-    python simple_viz.py
-    
-    (Edit the filename below)
+    Test with sample data
     """
     
     import pandas as pd
     import sys
     
-    # EDIT THIS LINE WITH YOUR FILENAME:
-    filename = 'test_data.csv' if len(sys.argv) == 1 else sys.argv[1]
+    # Create or load test data
+    if len(sys.argv) > 1:
+        # Load from file
+        filename = sys.argv[1]
+        print(f"Loading {filename}...")
+        df = pd.read_csv(filename)
+    else:
+        # Create sample data
+        print("Creating sample data...")
+        np.random.seed(42)
+        
+        data = []
+        for seg in range(10):
+            # Each segment has different elasticity
+            elasticity = 1.0 + (seg / 10) * 2.0
+            
+            # Multiple mortgages per segment
+            for mort in range(20):
+                for margin in np.linspace(0, 2, 200):
+                    pred = 0.9 * np.exp(-elasticity * margin) + np.random.normal(0, 0.05)
+                    pred = np.clip(pred, 0, 1)
+                    
+                    data.append({
+                        'segment': seg,
+                        'margin': margin,
+                        'prediction': pred
+                    })
+        
+        df = pd.DataFrame(data)
     
-    print(f"Loading {filename}...")
-    df = pd.read_csv(filename)
     print(f"Loaded {len(df)} rows, {df['segment'].nunique()} segments")
     
     # Run analysis
-    stats = analyze_all_segments(df)
+    results = analyze_segments(df, smoothing_strength=0.03)
     
-    print("\n" + "="*50)
-    print("Files created:")
-    print("  - all_segments.png")
-    print("  - segment_X_violations.png (for worst 3)")
-    print("  - segment_X_smooth.png (for worst 3)")
-    print("="*50)
+    print("\n✓ Done! Check the PNG files.")
