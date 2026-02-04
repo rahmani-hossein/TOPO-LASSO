@@ -3,9 +3,9 @@ import pandas as pd
 
 class SegmentCurveSmoother:
     """
-    Smooth segment-level renewal probability curves
-    - Before decay_start: UNCHANGED
-    - After decay_start: Smooth decay that MATCHES THE GRADIENT at decay_start
+    Natural decay with smooth plateau
+    - Steep drop initially (matches natural gradient)
+    - Gradually flattens to near-horizontal at end
     """
     
     def isotonic_only(self, margins, probs):
@@ -14,34 +14,26 @@ class SegmentCurveSmoother:
         iso = IsotonicRegression(increasing=False, out_of_bounds='clip')
         return iso.fit_transform(margins, probs)
     
-    
     def isotonic_anchored(self, margins, probs,
                          decay_start=1.25,
                          target_prob_at_2=0.02,
-                         threshold_at_2=0.1,     # ← New parameter!
-                         match_gradient=True):
+                         threshold_at_2=0.2,
+                         plateau_approach='asymptotic'):  # 'asymptotic' or 'hermite'
         """
-        Gradient-matched decay with smart end point
+        Smooth decay that becomes flat at the end
+        
+        Math:
+        - First derivative starts negative (steep)
+        - First derivative approaches 0 (becomes flat)
+        - Second derivative is POSITIVE (concave up, "smiling")
+        
+        Result: Steep decline → gradual flattening
         
         Parameters
         ----------
-        decay_start : float
-            Where decay begins (default: 1.25)
-        target_prob_at_2 : float
-            Force probability down to this at margin=2.0 (default: 0.02)
-        threshold_at_2 : float
-            Only force down if actual prob at 2.0 is ABOVE this threshold
-            (default: 0.1)
-            - If actual_prob(2.0) < threshold_at_2: use actual value
-            - If actual_prob(2.0) >= threshold_at_2: force to target_prob_at_2
-        match_gradient : bool
-            If True, decay starts with same slope as original curve
-        
-        Example
-        -------
-        threshold_at_2 = 0.1:
-        - Segment has p(2.0) = 0.05 → Keep 0.05 (already low enough)
-        - Segment has p(2.0) = 0.25 → Force to 0.02 (too high, needs decay)
+        plateau_approach : str
+            'asymptotic': Exponential decay toward asymptote (recommended)
+            'hermite': Hermite cubic with zero end derivative
         """
         
         margins = np.asarray(margins)
@@ -51,73 +43,97 @@ class SegmentCurveSmoother:
         decay_mask = margins > decay_start
         
         if np.any(decay_mask):
-            # Get point at decay start
-            idx_at_decay = np.where(margins <= decay_start)[0][-1]
-            p_at_decay_start = probs[idx_at_decay]
-            m_at_decay_start = margins[idx_at_decay]
-            
-            # === SMART END POINT LOGIC ===
-            # Check actual probability at margin=2.0
             p_actual_at_2 = np.interp(2.0, margins, probs)
             
             if p_actual_at_2 < threshold_at_2:
-                # Already low enough, use actual value
-                p_end = p_actual_at_2
-                print(f"  Actual p(2.0)={p_actual_at_2:.4f} < threshold={threshold_at_2:.4f} → Using actual value")
-            else:
-                # Too high, force down to target
-                p_end = target_prob_at_2
-                print(f"  Actual p(2.0)={p_actual_at_2:.4f} >= threshold={threshold_at_2:.4f} → Forcing to {target_prob_at_2:.4f}")
-            
-            if match_gradient:
-                # === GRADIENT MATCHING ===
-                
-                # Estimate gradient at decay_start
-                if idx_at_decay >= 2:
-                    h1 = margins[idx_at_decay] - margins[idx_at_decay - 1]
-                    p1 = probs[idx_at_decay - 1]
-                    gradient_at_start = (p_at_decay_start - p1) / h1
-                else:
-                    gradient_at_start = (p_at_decay_start - probs[idx_at_decay - 1]) / \
-                                       (m_at_decay_start - margins[idx_at_decay - 1])
-                
-                # Hermite cubic interpolation
-                m_start = decay_start
-                m_end = 2.0
-                p_start = p_at_decay_start
-                dp_start = gradient_at_start  # Match original gradient
-                dp_end = 0.0  # Flatten at end
-                
-                m_high = margins[decay_mask]
-                t = (m_high - m_start) / (m_end - m_start)
-                
-                # Hermite basis functions
-                h00 = 2*t**3 - 3*t**2 + 1
-                h10 = t**3 - 2*t**2 + t
-                h01 = -2*t**3 + 3*t**2
-                h11 = t**3 - t**2
-                
-                delta_m = m_end - m_start
-                
-                smoothed[decay_mask] = (
-                    h00 * p_start +
-                    h10 * delta_m * dp_start +
-                    h01 * p_end +
-                    h11 * delta_m * dp_end
-                )
+                # Already good!
+                print(f"  Natural p(2.0)={p_actual_at_2:.4f} < {threshold_at_2:.4f} → No modification")
                 
             else:
-                # === SIMPLE EXPONENTIAL ===
-                if p_at_decay_start > p_end:
-                    decay_lambda = -np.log(p_end / p_at_decay_start) / (2.0 - decay_start)
+                print(f"  Natural p(2.0)={p_actual_at_2:.4f} >= {threshold_at_2:.4f} → Applying smooth plateau decay")
+                
+                # Get starting point and gradient
+                idx_at_decay = np.where(margins <= decay_start)[0][-1]
+                p_at_decay_start = probs[idx_at_decay]
+                m_at_decay_start = margins[idx_at_decay]
+                
+                # Estimate natural gradient at decay_start
+                if idx_at_decay >= 1:
+                    h = margins[idx_at_decay] - margins[idx_at_decay - 1]
+                    p_prev = probs[idx_at_decay - 1]
+                    natural_gradient = (p_at_decay_start - p_prev) / h
                 else:
-                    decay_lambda = 0
+                    natural_gradient = -0.1  # Default steep decline
                 
                 m_high = margins[decay_mask]
-                smoothed[decay_mask] = p_at_decay_start * np.exp(-decay_lambda * (m_high - decay_start))
+                
+                if plateau_approach == 'asymptotic':
+                    # === EXPONENTIAL DECAY TO ASYMPTOTE ===
+                    # Formula: p(m) = asymptote + (p_start - asymptote) * exp(-λ(m - m_start))
+                    # This naturally gives:
+                    # - Steep start (follows natural gradient)
+                    # - Gradual flattening
+                    # - Approaches asymptote with zero slope
+                    
+                    # Set asymptote slightly below target for smooth approach
+                    asymptote = target_prob_at_2 * 0.8
+                    
+                    # Calculate λ to match natural gradient at start
+                    # p'(m_start) = -λ(p_start - asymptote) = natural_gradient
+                    # λ = -natural_gradient / (p_start - asymptote)
+                    
+                    if p_at_decay_start > asymptote:
+                        decay_lambda = -natural_gradient / (p_at_decay_start - asymptote)
+                        
+                        # Make sure it actually reaches near target by m=2.0
+                        # Adjust λ if needed
+                        p_test_at_2 = asymptote + (p_at_decay_start - asymptote) * np.exp(-decay_lambda * (2.0 - decay_start))
+                        
+                        if p_test_at_2 > threshold_at_2:
+                            # Need steeper decay
+                            # Force it to reach target_prob_at_2 at m=2.0
+                            decay_lambda = -np.log((target_prob_at_2 - asymptote) / (p_at_decay_start - asymptote)) / (2.0 - decay_start)
+                    else:
+                        decay_lambda = 1.0
+                    
+                    # Apply exponential decay to asymptote
+                    smoothed[decay_mask] = asymptote + (p_at_decay_start - asymptote) * np.exp(-decay_lambda * (m_high - decay_start))
+                    
+                    print(f"    Asymptotic decay: λ={decay_lambda:.3f}, asymptote={asymptote:.4f}")
+                    
+                elif plateau_approach == 'hermite':
+                    # === HERMITE CUBIC WITH ZERO END DERIVATIVE ===
+                    # Specify: p(m_start), p'(m_start), p(m_end), p'(m_end)=0
+                    
+                    m_start = decay_start
+                    m_end = 2.0
+                    p_start = p_at_decay_start
+                    dp_start = natural_gradient  # Match natural
+                    p_end = target_prob_at_2
+                    dp_end = 0.0  # FLAT at end
+                    
+                    # Normalize to [0, 1]
+                    t = (m_high - m_start) / (m_end - m_start)
+                    
+                    # Hermite basis functions
+                    h00 = 2*t**3 - 3*t**2 + 1
+                    h10 = t**3 - 2*t**2 + t
+                    h01 = -2*t**3 + 3*t**2
+                    h11 = t**3 - t**2
+                    
+                    delta_m = m_end - m_start
+                    
+                    smoothed[decay_mask] = (
+                        h00 * p_start +
+                        h10 * delta_m * dp_start +
+                        h01 * p_end +
+                        h11 * delta_m * dp_end
+                    )
+                    
+                    print(f"    Hermite decay: start_gradient={dp_start:.4f}, end_gradient=0.0")
             
-            # Ensure doesn't go below the chosen end point
-            smoothed[decay_mask] = np.maximum(smoothed[decay_mask], p_end)
+            # Ensure doesn't go below target
+            smoothed[decay_mask] = np.maximum(smoothed[decay_mask], target_prob_at_2)
         
         return np.clip(smoothed, 0.001, 0.999)
     
@@ -135,6 +151,8 @@ class SegmentCurveSmoother:
             margins = seg_df[margin_col].values
             probs = seg_df[prob_col].values
             
+            print(f"\nSegment {segment_id}:")
+            
             if method == 'isotonic_only':
                 smoothed = self.isotonic_only(margins, probs)
             elif method == 'isotonic_anchored':
@@ -144,8 +162,6 @@ class SegmentCurveSmoother:
             
             seg_df['smoothed_prob'] = smoothed
             results.append(seg_df)
-            
-            print(f"✓ Segment {segment_id}: Gradient-matched decay")
         
         return pd.concat(results, ignore_index=True)
 
@@ -153,11 +169,22 @@ class SegmentCurveSmoother:
 # === USAGE ===
 calibrator = SegmentCurveSmoother()
 
-# With gradient matching (smooth transition!)
+# Try asymptotic approach (recommended)
 result_df = calibrator.smooth_segment_dataframe(
     segment_df,
     method='isotonic_anchored',
     decay_start=1.25,
     target_prob_at_2=0.02,
-    match_gradient=True  # ← This matches the slope!
+    threshold_at_2=0.2,
+    plateau_approach='asymptotic'  # Smooth decay to plateau
+)
+
+# Or try Hermite with zero end derivative
+result_df = calibrator.smooth_segment_dataframe(
+    segment_df,
+    method='isotonic_anchored',
+    decay_start=1.25,
+    target_prob_at_2=0.02,
+    threshold_at_2=0.2,
+    plateau_approach='hermite'  # Cubic with flat end
 )
